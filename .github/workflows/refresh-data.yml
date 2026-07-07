@@ -1,0 +1,49 @@
+name: Refresh market data & redeploy
+
+on:
+  schedule:
+    - cron: '17 6 * * 1-5'   # weekdays 06:17 UTC, after US close
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: refresh-data
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Download fresh market data (Yahoo / FRED / Coinbase)
+        run: |
+          python tools/download_data.py
+          python tools/download_data_meta.py
+
+      - name: Rebuild data bundle and assemble app
+        run: |
+          python tools/build_bundle.py
+          python tools/assemble.py
+          cp dist/alphalab.html docs/index.html
+
+      - name: Smoke-test the build (24 checks on real data)
+        run: node tools/smoke.js
+
+      - name: Commit & push if data changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/bundle.js dist/alphalab.html docs/index.html
+          if git diff --cached --quiet; then
+            echo "No data changes."
+          else
+            git commit -m "data: refresh market snapshot ($(date -u +%F))"
+            git push
+          fi

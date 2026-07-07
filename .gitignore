@@ -1,0 +1,5 @@
+# raw API downloads are a rebuildable cache (~50MB) — regenerate with tools/download_data.py
+data/raw/
+__pycache__/
+*.pyc
+*.log

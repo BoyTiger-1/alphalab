@@ -1,0 +1,50 @@
+<title>AlphaLab — Quant Research OS</title>
+<style>
+/*__CSS__*/
+</style>
+<div id="app" style="display:none">
+  <div id="topbar">
+    <div id="logo"><span class="mark">α<span>LPHALAB</span></span><span class="sub">Quant Research OS</span></div>
+    <div id="cmdwrap"><input id="cmd" placeholder="terminal — try: CHART NVDA · BT S001 · STRESS COVID · Ctrl+K" autocomplete="off" spellcheck="false"></div>
+    <div class="spacer"></div>
+    <span class="stat" id="asof"></span>
+    <span class="stat"><span class="led idle" id="res-led"></span><span id="res-stat">researcher idle</span></span>
+    <span id="clock"></span>
+  </div>
+  <div id="main-row">
+    <div id="rail"></div>
+    <div id="main-col">
+      <div id="tabstrip"></div>
+      <div id="workspace"></div>
+    </div>
+  </div>
+  <div id="statusbar">
+    <span id="sb-left"><b>αL</b> RESEARCH OS</span>
+    <div id="tape-wrap"><div id="tape"></div></div>
+    <span id="sb-right">real data · Yahoo / FRED / Coinbase</span>
+  </div>
+</div>
+<div id="palette">
+  <div id="palette-box">
+    <input id="palette-input" placeholder="type a command, symbol, or strategy…" autocomplete="off" spellcheck="false">
+    <div id="palette-list"></div>
+    <div id="palette-hint">↑↓ navigate · Enter run · Esc close · direct: GO, CHART, COMPARE, BT, RESEARCH, FACTOR SCAN, STRESS, HELP</div>
+  </div>
+</div>
+<script>
+/*__DATA__*/
+/*__CORE__*/
+/*__QUANT__*/
+/*__CHARTS__*/
+/*__FACTORS__*/
+/*__ML__*/
+/*__STRATEGIES__*/
+/*__REGISTRY__*/
+/*__RESEARCHER__*/
+/*__MODULES_A__*/
+/*__MODULES_B__*/
+/*__MODULES_C__*/
+try { UI.boot(); } catch (e) {
+  document.body.innerHTML = '<pre style="color:#e66767;padding:20px;font-family:monospace">Boot failure: ' + (e.stack || e.message) + '</pre>';
+}
+</script>
