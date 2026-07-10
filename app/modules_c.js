@@ -171,34 +171,42 @@ UI.def('holdings', 'My Holdings', '❖', 'Portfolio & Risk', function (el, state
   const byCls = {};
   rows.forEach(r => byCls[r.cls] = (byCls[r.cls] || 0) + r.mv / totMV);
   C.bars(document.getElementById('h-exp'), Object.entries(byCls).map(([k, v]) => ({ label: k, value: v })), { horizontal: true, pct: true, sorted: true });
-  // portfolio daily returns (2y) from real closes
-  const al = AL.align(rows.map(r => r.sym), 'ret');
+  // portfolio daily returns (2y) from real closes.
+  // an empty book (fresh competition mode) has nothing to align, so guard everything
+  const al = rows.length ? AL.align(rows.map(r => r.sym), 'ret') : null;
   const wts = rows.map(r => r.mv / totMV);
-  const n = al.dates.length;
+  const n = al ? al.dates.length : 0;
   const prets = [];
   for (let t = 0; t < n; t++) prets.push(rows.reduce((s, r, i) => s + wts[i] * (al.cols[r.sym] ? al.cols[r.sym][t] : 0), 0));
   const cut = Math.max(0, n - 504);
-  const dts = al.dates.slice(cut);
+  const dts = al ? al.dates.slice(cut) : [];
   const spyM = new Map(AL.returns('SPY').dates.map((d, i) => [d, AL.returns('SPY').values[i]]));
-  const spyR = dts.map(d => spyM.get(d) ?? 0);
-  const b6040 = (() => { const t = AL.returns('TLT'); const tm = new Map(t.dates.map((d, i) => [d, t.values[i]])); return dts.map(d => 0.6 * (spyM.get(d) ?? 0) + 0.4 * (tm.get(d) ?? 0)); })();
-  C.line(document.getElementById('h-eq'), [
-    { name: 'Portfolio', dates: dts, values: Q.equity(prets.slice(cut)).slice(1).map(x => x * 100), color: C.SERIES[0], width: 2 },
-    { name: 'SPY', dates: dts, values: Q.equity(spyR).slice(1).map(x => x * 100), color: C.MUTED },
-    { name: '60/40', dates: dts, values: Q.equity(b6040).slice(1).map(x => x * 100), color: C.SERIES[2], dash: [4, 3] }]);
-  // factor betas via regression on SPY, TLT, GLD, IWM-SPY(size)
-  const facs = { MKT: 'SPY', DUR: 'TLT', GOLD: 'GLD', SIZE: 'IWM' };
-  const pr1y = prets.slice(-252);
-  const betas = Object.entries(facs).map(([k, s]) => {
-    const fr = AL.returns(s);
-    const fm = new Map(fr.dates.map((d, i) => [d, fr.values[i]]));
-    let fvals = al.dates.slice(-252).map(d => fm.get(d) ?? 0);
-    if (k === 'SIZE') fvals = fvals.map((v, i) => v - (spyM.get(al.dates.slice(-252)[i]) ?? 0));
-    return { label: k, value: Q.linreg(fvals, pr1y).b };
-  });
-  C.bars(document.getElementById('h-fact'), betas, { horizontal: true });
-  const mktBeta = betas.find(b => b.label === 'MKT').value;
-  document.getElementById('h-beta').textContent = f.n(mktBeta);
+  let mktBeta = 0;
+  if (n > 40) {
+    const spyR = dts.map(d => spyM.get(d) ?? 0);
+    const b6040 = (() => { const t = AL.returns('TLT'); const tm = new Map(t.dates.map((d, i) => [d, t.values[i]])); return dts.map(d => 0.6 * (spyM.get(d) ?? 0) + 0.4 * (tm.get(d) ?? 0)); })();
+    C.line(document.getElementById('h-eq'), [
+      { name: 'Portfolio', dates: dts, values: Q.equity(prets.slice(cut)).slice(1).map(x => x * 100), color: C.SERIES[0], width: 2 },
+      { name: 'SPY', dates: dts, values: Q.equity(spyR).slice(1).map(x => x * 100), color: C.MUTED },
+      { name: '60/40', dates: dts, values: Q.equity(b6040).slice(1).map(x => x * 100), color: C.SERIES[2], dash: [4, 3] }]);
+    // factor betas via regression on SPY, TLT, GLD, IWM-SPY(size)
+    const facs = { MKT: 'SPY', DUR: 'TLT', GOLD: 'GLD', SIZE: 'IWM' };
+    const pr1y = prets.slice(-252);
+    const betas = Object.entries(facs).map(([k, s]) => {
+      const fr = AL.returns(s);
+      const fm = new Map(fr.dates.map((d, i) => [d, fr.values[i]]));
+      let fvals = al.dates.slice(-252).map(d => fm.get(d) ?? 0);
+      if (k === 'SIZE') fvals = fvals.map((v, i) => v - (spyM.get(al.dates.slice(-252)[i]) ?? 0));
+      return { label: k, value: Q.linreg(fvals, pr1y).b };
+    });
+    C.bars(document.getElementById('h-fact'), betas, { horizontal: true });
+    mktBeta = betas.find(b => b.label === 'MKT').value;
+    document.getElementById('h-beta').textContent = f.n(mktBeta);
+  } else {
+    document.getElementById('h-eq').innerHTML = '<div class="empty">Add positions to see performance vs benchmarks.</div>';
+    document.getElementById('h-fact').innerHTML = '<div class="empty">No positions yet.</div>';
+    document.getElementById('h-beta').textContent = '-';
+  }
   // add/remove
   document.getElementById('h-add').addEventListener('click', () => {
     const sym = prompt('Symbol (any bundled instrument, e.g. AAPL, BTC-USD):');
@@ -254,6 +262,7 @@ UI.def('holdings', 'My Holdings', '❖', 'Portfolio & Risk', function (el, state
   // AI review
   document.getElementById('h-review').addEventListener('click', () => {
     const box = document.getElementById('h-ai');
+    if (!rows.length) { box.innerHTML = '<div class="empty">Add positions first, then run the review.</div>'; return; }
     const regime = Q.marketRegime();
     const p = Q.perf(prets.slice(-504), { bench: dts.map(d => spyM.get(d) ?? 0) });
     const hhi = Q.sum(rows.map(r => (r.mv / totMV) ** 2));
