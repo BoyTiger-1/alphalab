@@ -22,12 +22,18 @@ PARTS = {
     "/*__MODULES_B__*/": os.path.join(APP, "modules_b.js"),
     "/*__MODULES_C__*/": os.path.join(APP, "modules_c.js"),
     "/*__MODULES_D__*/": os.path.join(APP, "modules_d.js"),
+    "/*__MODULES_E__*/": os.path.join(APP, "modules_e.js"),
+    "/*__MODULES_F__*/": os.path.join(APP, "modules_f.js"),
+    "/*__SP500__*/": os.path.join(ROOT, "data", "sp500.js"),
+    "/*__MARKET__*/": os.path.join(ROOT, "data", "market.js"),
 }
+# data bundles that may be absent in a minimal build
+OPTIONAL = {"/*__ALTDATA__*/", "/*__SP500__*/", "/*__MARKET__*/"}
 
 html = open(os.path.join(APP, "index.html"), encoding="utf-8").read()
 for marker, path in PARTS.items():
-    if marker == "/*__ALTDATA__*/" and not os.path.exists(path):
-        html = html.replace(marker, "/* no altdata bundle in this build */")
+    if marker in OPTIONAL and not os.path.exists(path):
+        html = html.replace(marker, f"/* optional bundle missing: {os.path.basename(path)} */")
         continue
     src = open(path, encoding="utf-8").read()
     if "</script" in src.lower():

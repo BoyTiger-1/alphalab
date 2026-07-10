@@ -18,16 +18,18 @@
 
 AlphaLab does the work of a quantitative research team in a single self-contained page:
 
-- **Stock Advisor**: ranks every stock in the universe on seven factors (momentum, trend, risk-adjusted return, volatility, consistency, market-regime fit, and real sentiment) and explains each pick in plain English, with suggested position sizes and confidence levels
+- **Stock Advisor**: ranks every listed US stock, over 4,400 names, on eight factors (momentum, trend, risk-adjusted return, volatility, consistency, market-regime fit, and real sentiment) and explains each pick in plain English, with suggested position sizes and confidence levels
 - **Real sentiment intelligence**: worldwide news tone and coverage volume from GDELT, investor social sentiment from StockTwits, and public attention from Wikipedia pageviews, bundled per ticker and refreshable live from the browser
 - **Portfolio management**: enter or CSV-import any portfolio, track it against real closing prices, get an AI review with statistical justification, and generate a written Investment Strategy Report ready to print
-- **Wharton competition mode**: one click gives you $100,000 of virtual cash with full buy/sell cash accounting
+- **Competition mode**: one click gives you $100,000 of virtual cash with full buy/sell cash accounting, built for contests like the Wharton Global Investment Competition
+- **Investment Firm Simulator**: run your own fund through a hidden three-year window of real market history with AI analysts (macro, quant, risk) who debate your decisions, real crises arriving on schedule, 2-and-20 fees, investor flows, and a final grade
+- **Quant Toolkit**: a PCA market-structure map with clustering, a no-code Strategy Composer wired into the full validation pipeline, a seasonality explorer with significance tests, and a drawdown analyzer
 - **118 strategy research modules**: trend, momentum, pairs arbitrage, volatility, factor investing, macro, seasonality, crypto, machine learning, and allocation, each backtestable with honest costs and a 5-stage validation gauntlet
 - **An autonomous AI researcher** that invents hypotheses, tests them on real history, and files every result (including failures) into a persistent knowledge base
 - **A risk laboratory**: replay your exact portfolio through 2008, COVID, 2022, the dot-com crash, and Black Monday 1987, plus Monte Carlo simulation, VaR ladders, and rate-shock sensitivities
 - **A built-in guide** that explains every screen and every number in plain English, written for people who have never invested before
 
-Everything computes on real data: 78 instruments with daily history back to 2000 (S&P 500 back to 1970) from Yahoo Finance, 22 macro series from FRED, 8 crypto pairs from Coinbase, and news/social/attention feeds from GDELT, StockTwits, and Wikipedia. Nothing is simulated. A GitHub Action refreshes the whole snapshot on weekday mornings.
+Everything computes on real data across three tiers: 78 flagship instruments (majors, ETFs, futures, FX, crypto) with full daily history back to 2000 (S&P 500 back to 1970), every S&P 500 constituent with 10 years of weekly prices and sector labels, and every listed US common stock above a small size floor, about 3,900 more names, with 3 years of weekly prices (the same coverage idea as a total-market index fund). Macro comes from FRED, crypto from Coinbase, news/social/attention from GDELT, StockTwits, and Wikipedia. Nothing is simulated. A GitHub Action refreshes the whole snapshot on weekday mornings.
 
 ## New to investing? Start here
 
@@ -37,7 +39,7 @@ The short version:
 
 1. Press `Ctrl+K`, type a ticker like `AMZN`, press Enter. That is the stock's real history, including every painful drop.
 2. Open **Stock Advisor** and press "Score the universe". Read the plain-English reasoning on each pick.
-3. Open **My Holdings**, press **Wharton mode ($100K)**, and add positions (the Advisor can add them for you and deducts the cash).
+3. Open **My Holdings**, press **Competition mode ($100K)**, and add positions (the Advisor can add them for you and deducts the cash).
 4. Open **Risk Lab** and see what 2008 or COVID would have done to your exact portfolio, in dollars.
 5. Back in My Holdings, press **Strategy report** for a written investment strategy document.
 
@@ -47,7 +49,7 @@ The Wharton Global Investment Competition gives teams roughly $100,000 in virtua
 
 | Competition need | Where it lives in AlphaLab |
 |---|---|
-| Manage a $100K virtual portfolio | My Holdings, Wharton mode: cash accounting on every buy and sell at real closes |
+| Manage a $100K virtual portfolio | My Holdings, Competition mode: cash accounting on every buy and sell at real closes |
 | Pick stocks with defendable reasons | Stock Advisor: seven-factor scores plus a written thesis per stock you can cite |
 | Show sentiment/news awareness | Sentiment & News desk: real GDELT news tone, StockTwits crowd lean, Wikipedia attention |
 | Demonstrate risk management | Risk Lab: crisis replays, Monte Carlo, VaR; the numbers judges want to see quantified |
@@ -105,6 +107,11 @@ Deep links work too: `#risk`, `#advisor`, `#guide`, `#strat=S035`, `#chart=GLD`.
 | **Data Hub** | Dataset catalog, quality audit, CSV upload (your file becomes a first-class instrument) |
 | **Stock Advisor** | Seven-factor stock recommendations with written theses and suggested weights |
 | **Sentiment & News** | Real news tone, coverage volume, social sentiment, and attention per ticker, with live refresh |
+| **Market Structure** | PCA map of the whole index with k-means clusters: which stocks actually trade together |
+| **Strategy Composer** | Build your own strategy from dropdowns, no code, run through the full validation pipeline |
+| **Seasonality** | Calendar-month and weekday patterns with t-statistics to separate real effects from noise |
+| **Drawdown Analyzer** | Every major historical decline: depth, fall time, recovery time |
+| **Firm Simulator** | Manage a fund through a masked window of real history: sleeves, fees, investor flows, AI analyst committee, final grade |
 | **AI Researcher** | The autonomous hypothesis loop with its experiment database |
 | **Strategy Lab** | 118 strategy modules: configure, backtest, validate, generate reports |
 | **Ensemble Engine** | Strategy competition and inverse-vol blending of uncorrelated winners |
@@ -116,6 +123,10 @@ Deep links work too: `#risk`, `#advisor`, `#guide`, `#strat=S035`, `#chart=GLD`.
 | **Reports / Knowledge Base** | Every document and every finding, searchable and printable |
 
 ![Risk Lab, 2008 crisis replay](docs/screenshots/risk-lab.png)
+
+## The Investment Firm Simulator
+
+Found a fund ($10M to $100M), deploy capital across validated strategy sleeves and stocks, and advance week by week through a hidden three-year window of real market history. Crashes, rate cycles, curve inversions, inflation prints, and single-stock shocks arrive exactly as they actually happened, with dates masked so you cannot look up the answers. A three-analyst AI committee reads the same real data and argues with you: the macro strategist watches vol, rates and credit; the quant tracks sleeve performance; the risk officer polices drawdown, leverage and concentration, and force-liquidates half the book past a 25% drawdown. You earn 2% management and 20% performance fees above the high-water mark, investors subscribe or redeem based on your numbers against the index, and at week 156 you get a letter grade plus the reveal of which era you survived. It turns strategy research into portfolio management practice.
 
 ## How validation works (read before trusting any backtest)
 
@@ -149,6 +160,8 @@ A GitHub Action ([refresh-data.yml](.github/workflows/refresh-data.yml)) refresh
 python tools/download_data.py        # Yahoo + FRED + Coinbase price/macro history
 python tools/download_data_meta.py   # instrument metadata
 python tools/download_altdata.py     # GDELT news + StockTwits + Wikipedia attention
+python tools/download_sp500.py       # every S&P 500 constituent, 10y weekly
+python tools/download_market.py      # every other listed US stock, 3y weekly
 python tools/build_bundle.py         # compact integer-scaled data bundle
 python tools/assemble.py             # everything into dist/alphalab.html
 node tools/smoke.js                  # 24-check test suite against the real bundle
@@ -169,7 +182,7 @@ app/
   factors.js     alpha discovery grammar and factor library
   ml.js          in-browser models and walk-forward engine
   researcher.js  autonomous hypothesis loop and report builder
-  modules_*.js   the UI workspaces (incl. Advisor, Sentiment, Guide, Wharton mode)
+  modules_*.js   the UI workspaces (Advisor, Sentiment, Guide, Quant Toolkit, Firm Simulator)
 data/
   bundle.js      the market-data snapshot (shared trading calendar, integer-scaled)
   altdata.js     the news/social/attention snapshot
@@ -188,7 +201,7 @@ No frameworks, no runtime dependencies. The assembler concatenates everything in
 
 **Where is my work saved?** In your browser's localStorage. Clearing site data wipes it (there is also a reset button in the Knowledge Base).
 
-**The page loads slowly the first time.** It is a single file carrying 26 years of data for 108 series. It caches after the first visit.
+**The page loads slowly the first time.** It is a single file carrying 26 years of daily data plus weekly history for 4,400+ stocks (about 10 MB, 3 MB compressed in transit). It caches after the first visit.
 
 **A backtest number looks too good.** Distrust it first: check turnover, the out-of-sample column, and the PSR. If it still looks wrong, open an issue; leakage bugs are the most valuable reports.
 

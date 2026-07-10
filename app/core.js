@@ -39,9 +39,37 @@ AL.getSeries = function (sym) {
   } else if (AL.custom[sym]) {
     const e = AL.custom[sym];
     s = { sym, name: e.name, cls: 'Custom', dates: e.dates, values: e.values, src: 'User upload' };
+  } else if (AL.sp500() && AL.sp500().cols[sym]) {
+    // extended universe tier 1: weekly bars, 10y, every S&P 500 constituent
+    const sp = AL.sp500(), e = sp.cols[sym];
+    s = { sym, name: e.n, cls: 'Equity', sector: e.sec, weekly: true,
+      dates: sp.wcal.slice(e.f), values: dec(e.c, e.s), src: 'Yahoo Finance (weekly)' };
+  } else if (window.ALPHALAB_MKT && window.ALPHALAB_MKT.cols[sym]) {
+    // tier 2: the rest of the listed US market, 3y weekly
+    const mk = window.ALPHALAB_MKT, e = mk.cols[sym];
+    s = { sym, name: e.n, cls: 'Equity', sector: e.sec, weekly: true, mc: e.mc,
+      dates: mk.wcal.slice(e.f), values: dec(e.c, e.s), src: 'Yahoo Finance (weekly)' };
   }
   if (s) AL._cache.set(sym, s);
   return s;
+};
+AL.sp500 = () => window.ALPHALAB_SP500 || null;
+// bars per year for a series: weekly universe annualizes at 52, daily at 252
+AL.freq = ser => ser && ser.weekly ? 52 : 252;
+// any daily series resampled onto the shared weekly grid (for cross-frequency math)
+AL.weeklyValues = function (sym) {
+  const sp = AL.sp500();
+  if (!sp) return null;
+  if (sp.cols[sym]) { const e = sp.cols[sym]; const v = dec(e.c, e.s); const out = new Array(sp.wcal.length).fill(null); for (let i = 0; i < v.length; i++) out[e.f + i] = v[i]; return out; }
+  const s = AL.getSeries(sym);
+  if (!s) return null;
+  const m = new Map(s.dates.map((d, i) => [d, s.values[i]]));
+  let last = null, j = 0;
+  const sorted = s.dates;
+  return sp.wcal.map(w => {
+    while (j < sorted.length && sorted[j] <= w) { last = s.values[j]; j++; }
+    return last;
+  });
 };
 
 AL.ohlc = function (sym) {
@@ -76,6 +104,21 @@ AL.catalog = function () {
   for (const [sym, e] of Object.entries(AL.D.crypto)) out.push({ sym, name: e.n, cls: 'Crypto', n: e.c.length, from: e.d0, src: 'Coinbase' });
   for (const [sym, e] of Object.entries(AL.D.fred)) out.push({ sym, name: e.n, cls: 'Macro', n: e.a ? e.c.length : e.v.length, from: e.a ? AL.cal[e.f] : e.d[0], src: 'FRED' });
   for (const [sym, e] of Object.entries(AL.custom)) out.push({ sym, name: e.name, cls: 'Custom', n: e.values.length, from: e.dates[0], src: 'User upload' });
+  const sp = AL.sp500();
+  if (sp) {
+    // full index universe, minus names the daily bundle already covers in depth
+    for (const [sym, e] of Object.entries(sp.cols)) {
+      if (AL.D.series[sym]) continue;
+      out.push({ sym, name: e.n, cls: 'Equity', sector: e.sec, weekly: true, n: e.c.length, from: sp.wcal[e.f], src: 'Yahoo (weekly)' });
+    }
+  }
+  const mk = window.ALPHALAB_MKT;
+  if (mk) {
+    for (const [sym, e] of Object.entries(mk.cols)) {
+      if (AL.D.series[sym] || (sp && sp.cols[sym])) continue;
+      out.push({ sym, name: e.n, cls: 'Equity', sector: e.sec, weekly: true, n: e.c.length, from: mk.wcal[e.f], src: 'Yahoo (weekly)' });
+    }
+  }
   return out;
 };
 

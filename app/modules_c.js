@@ -115,7 +115,7 @@ UI.def('holdings', 'My Holdings', '❖', 'Portfolio & Risk', function (el, state
   // wharton competition setup: wipe the demo book and start from $100K virtual cash
   if (state.wharton) {
     state.wharton = false;
-    if (confirm('Set up Wharton competition mode? This clears current holdings and starts you with $100,000 virtual cash.')) {
+    if (confirm('Set up competition mode? This clears current holdings and starts you with $100,000 virtual cash.')) {
       AL.store.set('holdings', []);
       AL.store.set('cash', 100000);
     }
@@ -138,7 +138,7 @@ UI.def('holdings', 'My Holdings', '❖', 'Portfolio & Risk', function (el, state
       <span class="badge dim">valued at real ${AL.asof} closes</span>
       ${cash != null ? '<span class="badge info">WHARTON MODE</span>' : ''}
       <span style="flex:1"></span>
-      <button class="btn" id="h-wharton">Wharton mode ($100K)</button>
+      <button class="btn" id="h-wharton">Competition mode ($100K)</button>
       <button class="btn" id="h-import">Import CSV</button>
       <button class="btn" id="h-add">+ Add position</button>
       <button class="btn" id="h-report">Strategy report</button>

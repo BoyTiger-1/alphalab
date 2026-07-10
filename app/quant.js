@@ -163,6 +163,7 @@ Q.equity = function (rets, start = 1) {
   return eq;
 };
 Q.perf = function (rets, opts = {}) {
+  const ANN = opts.ann ?? 252;                      // bars per year (52 for the weekly universe)
   const rf = (opts.rf ?? 0.02) / ANN;              // annual risk-free, default 2%
   const bench = opts.bench || null;                 // aligned benchmark returns
   const n = rets.length;

@@ -31,46 +31,89 @@ UI.altSignals = function (sym) {
   return out;
 };
 
-/* ---- multi-factor stock scoring used by the Advisor ---- */
-UI.advisorUniverse = () => AL.catalog().filter(x => x.cls === 'Equity').map(x => x.sym);
+/* ---- multi-factor stock scoring used by the Advisor ----
+   Scores the FULL US market on weekly bars: S&P 500 names carry 10y of history,
+   the extended total-market universe carries 3y. Falls back to daily majors
+   if neither weekly bundle shipped with the build. */
+UI.mergedUniverse = function () {
+  // {sym: {n, sec, mc?, f, s, c, wcal}} across both weekly bundles
+  const out = {};
+  const sp = AL.sp500();
+  if (sp) for (const [sym, e] of Object.entries(sp.cols)) out[sym] = { ...e, wcal: sp.wcal };
+  const mkt = window.ALPHALAB_MKT;
+  if (mkt) for (const [sym, e] of Object.entries(mkt.cols)) if (!out[sym]) out[sym] = { ...e, wcal: mkt.wcal };
+  return out;
+};
 
-UI.scoreStocks = function () {
-  const syms = UI.advisorUniverse();
+UI.scoreStocks = function (opts = {}) {
+  const uni = UI.mergedUniverse();
   const regime = Q.marketRegime();
-  const spyR = AL.returns('SPY');
-  const spyMap = new Map(spyR.dates.map((d, i) => [d, spyR.values[i]]));
   const rows = [];
-  for (const sym of syms) {
-    const s = AL.getSeries(sym);
-    const px = s.values, n = px.length;
-    if (n < 800) continue;
-    const rets = [];
-    for (let i = n - 756; i < n; i++) rets.push(px[i] / px[i - 1] - 1);
-    const r252 = rets.slice(-252), r63 = rets.slice(-63);
-    // the raw factor inputs, all straight off real price history
-    const mom = px[n - 11] / px[n - 137] - 1;                          // 6-month momentum, 2-week skip
-    const sma200 = Q.sma(px.slice(-260), 200);
-    const trend = px[n - 1] / sma200[sma200.length - 1] - 1;           // distance above/below 200-day average
-    const vol = Q.std(r63) * Math.sqrt(252);
-    const sharpe = Q.std(r252) ? (Q.mean(r252) * 252 - 0.02) / (Q.std(r252) * Math.sqrt(252)) : 0;
-    // how often did it finish a month green over the last 3 years
-    let posM = 0, mTot = 0;
-    for (let m = 0; m + 21 <= rets.length; m += 21) { mTot++; if (Q.sum(rets.slice(m, m + 21)) > 0) posM++; }
-    const consistency = mTot ? posM / mTot : 0.5;
-    const ddHigh = px[n - 1] / Math.max(...px.slice(-252)) - 1;        // pullback from 52-week high
-    const dts = s.dates.slice(-252);
-    const spv = dts.map(d => spyMap.get(d) ?? 0);
-    const beta = Q.linreg(spv, r252).b;
-    const alt = UI.altSignals(sym);
-    rows.push({ sym, name: s.name, mom, trend, vol, sharpe, consistency, ddHigh, beta, alt, rets, last: px[n - 1] });
+  if (Object.keys(uni).length) {
+    const sp = AL.sp500();
+    const spyW = AL.weeklyValues('SPY');
+    const spyRet = spyW ? spyW.map((v, i) => i && spyW[i - 1] ? v / spyW[i - 1] - 1 : 0) : null;
+    for (const [sym, e] of Object.entries(uni)) {
+      const n = e.c.length;
+      if (n < 80) continue;                                            // need ~1.5y of weekly bars
+      const k = Math.pow(10, e.s);
+      const px = e.c.map(v => v / k);
+      const rets = [];
+      for (let i = 1; i < px.length; i++) rets.push(px[i] / px[i - 1] - 1);
+      const r52 = rets.slice(-52), r26 = rets.slice(-26);
+      const mom = px[n - 3] / px[Math.max(n - 29, 0)] - 1;             // 26-week momentum, 2-week skip
+      const trend = px[n - 1] / Q.mean(px.slice(-40)) - 1;             // vs 40-week average (~200d)
+      const vol = Q.std(r26) * Math.sqrt(52);
+      // tradeability floor: skip sub-$2 names and data-glitch volatility
+      if (px[n - 1] < 2 || !isFinite(vol) || vol > 1.5) continue;
+      const sharpe = Q.std(r52) ? (Q.mean(r52) * 52 - 0.02) / (Q.std(r52) * Math.sqrt(52)) : 0;
+      // share of positive 4-week blocks over up to 3 years
+      let pos = 0, tot = 0;
+      const r3y = rets.slice(-156);
+      for (let m = 0; m + 4 <= r3y.length; m += 4) { tot++; if (Q.sum(r3y.slice(m, m + 4)) > 0) pos++; }
+      const consistency = tot ? pos / tot : 0.5;
+      const ddHigh = px[n - 1] / Math.max(...px.slice(-52)) - 1;       // pullback from 52-week high
+      // beta vs SPY on the shared weekly grid (grids align on dates for both bundles)
+      let beta = 1;
+      if (spyRet && sp) {
+        const wmap = new Map(sp.wcal.map((d, i) => [d, spyRet[i]]));
+        const myDates = e.wcal.slice(e.f + 1).slice(-52);
+        const sp52 = myDates.map(d => wmap.get(d) ?? 0);
+        if (sp52.length === r52.length) beta = Q.linreg(sp52, r52).b;
+      }
+      rows.push({ sym, name: e.n, sector: e.sec || 'Unknown', mc: e.mc || null,
+        mom, trend, vol, sharpe, consistency, ddHigh, beta,
+        alt: UI.altSignals(sym), rets, last: px[n - 1], weekly: true, years: Math.round(n / 52) });
+    }
+  } else {
+    // no weekly bundles in this build: fall back to the daily majors
+    for (const x of AL.catalog().filter(x => x.cls === 'Equity' && !x.weekly)) {
+      const s = AL.getSeries(x.sym);
+      const px = s.values, n = px.length;
+      if (n < 800) continue;
+      const rets = [];
+      for (let i = n - 756; i < n; i++) rets.push(px[i] / px[i - 1] - 1);
+      const r252 = rets.slice(-252);
+      rows.push({ sym: x.sym, name: s.name, sector: 'Unknown', mc: null,
+        mom: px[n - 11] / px[n - 137] - 1,
+        trend: px[n - 1] / Q.mean(px.slice(-200)) - 1,
+        vol: Q.std(rets.slice(-63)) * Math.sqrt(252),
+        sharpe: Q.std(r252) ? (Q.mean(r252) * 252 - 0.02) / (Q.std(r252) * Math.sqrt(252)) : 0,
+        consistency: 0.5, ddHigh: px[n - 1] / Math.max(...px.slice(-252)) - 1,
+        beta: 1, alt: UI.altSignals(x.sym), rets, last: px[n - 1], weekly: false, years: 3 });
+    }
   }
-  // z-score every factor across the universe so they're comparable
+  // sector-relative momentum: beating your own sector matters more than beating the tape
+  const bySec = {};
+  rows.forEach(r => (bySec[r.sector] = bySec[r.sector] || []).push(r.mom));
+  rows.forEach(r => r.secRel = r.mom - Q.mean(bySec[r.sector] || [r.mom]));
+  // z-score every factor across the universe, clipped so one outlier cannot dominate
   const z = (key, invert) => {
-    const vals = rows.map(r => r[key]);
+    const vals = rows.map(r => r[key]).filter(isFinite);
     const m = Q.mean(vals), sd = Q.std(vals) || 1;
-    rows.forEach(r => r['z_' + key] = (invert ? -1 : 1) * (r[key] - m) / sd);
+    rows.forEach(r => r['z_' + key] = isFinite(r[key]) ? (invert ? -1 : 1) * Math.max(-3, Math.min(3, (r[key] - m) / sd)) : 0);
   };
-  z('mom'); z('trend'); z('sharpe'); z('vol', true); z('consistency');
+  z('mom'); z('trend'); z('sharpe'); z('vol', true); z('consistency'); z('secRel');
   // regime fit: reward beta in risk-on tape, punish it when the regime turns defensive
   rows.forEach(r => r.z_regime = (regime.pCalm > 0.5 ? 0.5 : -1.2) * ((r.beta - 1)));
   // sentiment composite from whatever alt feeds this name has
@@ -85,14 +128,14 @@ UI.scoreStocks = function () {
     r.hasSent = parts.length > 0;
   });
   // weighted composite; weights sum to 1
-  const W = { z_mom: 0.20, z_trend: 0.16, z_sharpe: 0.16, z_vol: 0.12, z_consistency: 0.10, z_regime: 0.11, z_sent: 0.15 };
+  const W = { z_mom: 0.17, z_trend: 0.13, z_sharpe: 0.14, z_vol: 0.10, z_consistency: 0.09, z_secRel: 0.11, z_regime: 0.11, z_sent: 0.15 };
   rows.forEach(r => {
     r.score = Object.entries(W).reduce((s2, [k, w]) => s2 + w * (r[k] || 0), 0);
-    // confidence: probabilistic sharpe on the last year of returns, blended with data coverage
-    r.conf = Q.psr(r.rets.slice(-252)) * (r.hasSent ? 1 : 0.92);
+    // confidence: probabilistic sharpe on the last year of returns, discounted without sentiment feeds
+    r.conf = Q.psr(r.rets.slice(-52)) * (r.hasSent ? 1 : 0.92);
   });
   rows.sort((a, b) => b.score - a.score);
-  return { rows, regime, weights: W };
+  return { rows, regime, weights: W, universe: rows.length };
 };
 
 // plain-english reasoning for one scored stock, built from its strongest and weakest factors
@@ -129,10 +172,10 @@ UI.def('advisor', 'Stock Advisor', '✦', 'Advisory', function (el, state, tab) 
     <div class="section-title">Stock Advisor, multi-factor recommendations
       <span class="badge dim">price factors + news + social + attention</span>
       <span style="flex:1"></span><button class="btn primary" id="ad-run">Score the universe</button></div>
-    <div class="info-box" style="margin-bottom:12px">Every stock in the universe is scored on seven ingredients: 6-month momentum, 200-day trend, 1-year risk-adjusted return, volatility, monthly consistency, fit with the current market regime, and a sentiment composite built from real GDELT news tone, StockTwits investor chatter, and Wikipedia attention data. Scores are relative rankings from historical data, not guarantees. AlphaLab recommends and explains; you decide.</div>
-    <div id="ad-body"><div class="empty">Press "Score the universe" to rank all stocks.</div></div>`;
+    <div class="info-box" style="margin-bottom:12px">Every stock in the bundled US universe (the full S&P 500 with 10 years of history plus the extended total-market list with 3 years) is scored on eight ingredients: 6-month momentum, 40-week trend, 1-year risk-adjusted return, volatility, monthly consistency, sector-relative momentum, fit with the current market regime, and a sentiment composite built from real GDELT news tone, StockTwits investor chatter, and Wikipedia attention data. Scores are relative rankings from historical data, not guarantees. AlphaLab recommends and explains; you decide.</div>
+    <div id="ad-body"><div class="empty">Press "Score the universe" to rank every stock.</div></div>`;
   const run = () => {
-    document.getElementById('ad-body').innerHTML = '<div class="empty">Scoring on real history...</div>';
+    document.getElementById('ad-body').innerHTML = '<div class="empty">Scoring the full universe on real history...</div>';
     setTimeout(() => {
       const res = UI.scoreStocks();
       state._res = res;
@@ -142,56 +185,89 @@ UI.def('advisor', 'Stock Advisor', '✦', 'Advisory', function (el, state, tab) 
   const render = (res) => {
     const f = AL.fmt;
     const { rows, regime } = res;
-    const top = rows.slice(0, 8);
-    // suggested weights: inverse-vol across the top picks, capped at 18% each
+    const sectors = ['All', ...[...new Set(rows.map(r => r.sector))].sort()];
+    const secFilter = state.sec || 'All';
+    const q = (state.q || '').toUpperCase();
+    const visible = rows.filter(r => (secFilter === 'All' || r.sector === secFilter) &&
+      (!q || r.sym.includes(q) || r.name.toUpperCase().includes(q)));
+    const shown = visible.slice(0, 250);
+    // starter basket: walk the ranking, max 2 names per sector, 10 picks, inverse-vol weights
+    const top = [];
+    const perSec = {};
+    for (const r of rows) {
+      if (top.length >= 10) break;
+      if ((perSec[r.sector] || 0) >= 2) continue;
+      perSec[r.sector] = (perSec[r.sector] || 0) + 1;
+      top.push(r);
+    }
     const iv = top.map(r => 1 / (r.vol || 0.2));
     const tot = Q.sum(iv);
-    top.forEach((r, i) => r.sugW = Math.min(iv[i] / tot, 0.18));
+    top.forEach((r, i) => r.sugW = Math.min(iv[i] / tot, 0.15));
     const wTot = Q.sum(top.map(r => r.sugW));
     top.forEach(r => r.sugW /= wTot);
     document.getElementById('ad-body').innerHTML = `
-      <div class="note" style="margin-bottom:8px">Regime at scoring: <b>${regime.label}</b>. ${regime.pCalm > 0.5 ? 'Risk-on tape, momentum and beta get a small boost.' : 'Stressed tape, the model favors low-beta defensive names.'}</div>
+      <div class="note" style="margin-bottom:8px"><b>${res.universe.toLocaleString()}</b> stocks scored. Regime: <b>${regime.label}</b>. ${regime.pCalm > 0.5 ? 'Risk-on tape, momentum and beta get a small boost.' : 'Stressed tape, the model favors low-beta defensive names.'}</div>
+      <div class="controls"><input class="inp" id="ad-q" placeholder="search ticker or name" value="${f.esc(state.q || '')}" style="width:180px">
+        <select class="inp" id="ad-sec">${sectors.map(s => `<option ${s === secFilter ? 'selected' : ''}>${f.esc(s)}</option>`).join('')}</select>
+        <span class="note">showing ${shown.length} of ${visible.length} matches</span></div>
       <div class="grid g23">
-        <div class="panel"><div class="panel-body nopad" style="max-height:calc(100vh - 300px);overflow:auto">
-          <table class="tbl" id="ad-tbl"><thead><tr><th>#</th><th>Stock</th><th class="r">Score</th><th class="r">Mom 6M</th><th class="r">vs 200d</th><th class="r">Sharpe 1Y</th><th class="r">Vol</th><th class="r">Sentiment</th><th class="r">Confidence</th></tr></thead><tbody>
-          ${rows.map((r, i) => `<tr data-i="${i}"><td>${i + 1}</td><td class="t"><span class="sym">${r.sym}</span> ${f.esc(r.name.slice(0, 20))}</td>
+        <div class="panel"><div class="panel-body nopad" style="max-height:calc(100vh - 340px);overflow:auto">
+          <table class="tbl" id="ad-tbl"><thead><tr><th>#</th><th>Stock</th><th>Sector</th><th class="r">Score</th><th class="r">Mom 6M</th><th class="r">Trend</th><th class="r">Sharpe 1Y</th><th class="r">Vol</th><th class="r">Sent</th><th class="r">Conf</th></tr></thead><tbody>
+          ${shown.map(r => `<tr data-sym="${r.sym}"><td>${rows.indexOf(r) + 1}</td><td class="t"><span class="sym">${r.sym}</span> ${f.esc(r.name.slice(0, 18))}</td>
+            <td class="t" style="font-size:10px">${f.esc((r.sector || '').slice(0, 14))}</td>
             <td class="r"><b class="${f.cls(r.score)}">${f.n(r.score)}</b></td>
-            <td class="r ${f.cls(r.mom)}">${f.spct(r.mom)}</td><td class="r ${f.cls(r.trend)}">${f.spct(r.trend)}</td>
-            <td class="r">${f.n(r.sharpe)}</td><td class="r">${f.pct(r.vol, 0)}</td>
-            <td class="r ${r.hasSent ? f.cls(r.z_sent) : ''}">${r.hasSent ? f.n(r.z_sent) : 'n/a'}</td>
+            <td class="r ${f.cls(r.mom)}">${f.spct(r.mom, 0)}</td><td class="r ${f.cls(r.trend)}">${f.spct(r.trend, 0)}</td>
+            <td class="r">${f.n(r.sharpe, 1)}</td><td class="r">${f.pct(r.vol, 0)}</td>
+            <td class="r ${r.hasSent ? f.cls(r.z_sent) : ''}">${r.hasSent ? f.n(r.z_sent, 1) : '·'}</td>
             <td class="r">${f.pct(r.conf, 0)}</td></tr>`).join('')}
           </tbody></table></div></div>
         <div style="display:flex;flex-direction:column;gap:12px;min-width:0">
-          <div class="panel"><div class="panel-head">Suggested starter basket (top 8, inverse-volatility)</div><div class="panel-body">
-            ${top.map(r => `<div class="kv"><span class="k"><span class="sym">${r.sym}</span> ${f.esc(r.name.slice(0, 18))}</span><span class="v">${f.pct(r.sugW, 1)}</span></div>`).join('')}
-            <div class="note" style="margin-top:8px">Weights cap any single name near 18% so one stock cannot sink the book. Use My Holdings to enter these with your budget, then stress test in Risk Lab.</div></div></div>
+          <div class="panel"><div class="panel-head">Starter basket (top 10, max 2 per sector, inverse-vol)</div><div class="panel-body">
+            ${top.map(r => `<div class="kv"><span class="k"><span class="sym">${r.sym}</span> ${f.esc(r.name.slice(0, 16))} <span style="color:var(--muted);font-size:10px">${f.esc((r.sector || '').slice(0, 12))}</span></span><span class="v">${f.pct(r.sugW, 1)}</span></div>`).join('')}
+            <div class="note" style="margin-top:8px">Sector cap keeps the basket diversified; weights cap any single name near 15%. Enter these in My Holdings with your budget, then stress test in Risk Lab.</div></div></div>
           <div class="panel"><div class="panel-head">Pick detail</div><div class="panel-body" id="ad-detail"><div class="empty">Click any stock for the full reasoning.</div></div></div>
         </div>
       </div>`;
-    document.querySelectorAll('#ad-tbl tr[data-i]').forEach(tr => tr.addEventListener('click', () => detail(rows[+tr.dataset.i], regime)));
+    const bySym = Object.fromEntries(rows.map(r => [r.sym, r]));
+    document.querySelectorAll('#ad-tbl tr[data-sym]').forEach(tr => tr.addEventListener('click', () => detail(bySym[tr.dataset.sym], regime)));
+    document.getElementById('ad-q').addEventListener('input', AL.debounce(e => { state.q = e.target.value; render(res); }, 300));
+    document.getElementById('ad-sec').addEventListener('change', e => { state.sec = e.target.value; render(res); });
     detail(rows[0], regime);
   };
   const detail = (r, regime) => {
     const f = AL.fmt;
-    // real forward-return range: block bootstrap the stock's own last 3y of daily returns out 63 days
-    const paths = Q.monteCarlo(r.rets, 63, 800, 7, 5).map(p => p[p.length - 1] - 1);
+    // real forward range: block bootstrap the stock's own weekly history one quarter out
+    const horizon = r.weekly ? 13 : 63, block = r.weekly ? 4 : 5;
+    const paths = Q.monteCarlo(r.rets, horizon, 800, 7, block).map(p => p[p.length - 1] - 1);
     const lo = Q.quantile(paths, 0.05), mid = Q.quantile(paths, 0.5), hi = Q.quantile(paths, 0.95);
-    // does it actually diversify the current book?
+    // does it actually diversify the current book? (everything resampled onto the weekly grid)
     let fit = '';
     const pf = AL.store.get('holdings', UI.DEMO_BOOK);
-    if (pf.length && !pf.some(h => h.sym === r.sym)) {
+    if (pf.length && !pf.some(h => h.sym === r.sym) && AL.sp500()) {
       try {
-        const al = AL.align([r.sym, ...pf.map(h => h.sym)], 'ret');
-        const mine = al.dates.map((_, t) => pf.reduce((s2, h) => s2 + (al.cols[h.sym] ? al.cols[h.sym][t] : 0), 0) / pf.length);
-        const c = Q.corr(al.cols[r.sym].slice(-252), mine.slice(-252));
-        fit = `<div class="kv"><span class="k">Correlation to your current book (1y)</span><span class="v">${f.n(c)}</span></div>
+        const wc = AL.sp500().wcal;
+        const mineW = wc.map(() => 0);
+        let ok = 0;
+        for (const h of pf) {
+          const wv = AL.weeklyValues(h.sym);
+          if (!wv) continue;
+          ok++;
+          for (let t = 1; t < wc.length; t++) if (wv[t] && wv[t - 1]) mineW[t] += wv[t] / wv[t - 1] - 1;
+        }
+        const meW = AL.weeklyValues(r.sym);
+        const a = [], b = [];
+        for (let t = wc.length - 52; t < wc.length; t++)
+          if (meW[t] && meW[t - 1]) { a.push(meW[t] / meW[t - 1] - 1); b.push(mineW[t] / Math.max(ok, 1)); }
+        const c = Q.corr(a, b);
+        if (isFinite(c)) fit = `<div class="kv"><span class="k">Correlation to your current book (1y)</span><span class="v">${f.n(c)}</span></div>
           <div class="note">${c < 0.5 ? 'Low correlation, adding this genuinely diversifies you.' : 'High correlation, this mostly doubles down on what you already own.'}</div>`;
-      } catch (e) { /* symbol alignment can fail on short histories */ }
+      } catch (e) { /* short histories can defeat the alignment */ }
     }
     document.getElementById('ad-detail').innerHTML = `
       <div style="font-weight:650;font-size:14px;margin-bottom:4px">${r.sym} · ${f.esc(r.name)} <span class="badge ${r.score > 0.2 ? 'ok' : r.score > -0.2 ? 'warn' : 'bad'}">score ${f.n(r.score)}</span></div>
+      <div class="note" style="margin-bottom:6px">${f.esc(r.sector || '')}${r.mc ? ' · market cap ' + f.usd(r.mc * 1e6) : ''} · ${r.years}y of ${r.weekly ? 'weekly' : 'daily'} history</div>
       <div class="note" style="margin-bottom:8px;line-height:1.6">${UI.stockThesis(r, regime)}</div>
-      <div class="chart" style="height:130px" id="ad-fac"></div>
+      <div class="chart" style="height:145px" id="ad-fac"></div>
       <div class="kv"><span class="k">Next-quarter range (bootstrap of its real history)</span><span class="v">${f.spct(lo)} to ${f.spct(hi)} (median ${f.spct(mid)})</span></div>
       <div class="kv"><span class="k">Statistical confidence (PSR, 1y)</span><span class="v">${f.pct(r.conf, 0)}</span></div>
       <div class="kv"><span class="k">Last close</span><span class="v">${f.px(r.last)}</span></div>
@@ -199,20 +275,20 @@ UI.def('advisor', 'Stock Advisor', '✦', 'Advisory', function (el, state, tab) 
       <div style="display:flex;gap:8px;margin-top:10px">
         <button class="btn small primary" id="ad-buy">Add to My Holdings</button>
         <button class="btn small" onclick="UI.openTab('chart',{sym:'${r.sym}',forceNew:true},'${r.sym} Chart')">Chart</button>
-        <button class="btn small" onclick="UI.focusModule('sentiment',{sym:'${r.sym}'})">Sentiment</button>
+        ${AL.alt()[r.sym] ? `<button class="btn small" onclick="UI.focusModule('sentiment',{sym:'${r.sym}'})">Sentiment</button>` : ''}
       </div>
       <div class="warn-box" style="margin-top:10px">This is a ranked research view of real historical and sentiment data. It is not a prediction or individual investment advice.</div>`;
     C.bars(document.getElementById('ad-fac'), [
       { label: 'Momentum', value: r.z_mom }, { label: 'Trend', value: r.z_trend },
       { label: 'Sharpe', value: r.z_sharpe }, { label: 'Low vol', value: r.z_vol },
-      { label: 'Consistency', value: r.z_consistency }, { label: 'Regime fit', value: r.z_regime },
-      { label: 'Sentiment', value: r.z_sent }], { horizontal: true });
+      { label: 'Consistency', value: r.z_consistency }, { label: 'Sector-rel', value: r.z_secRel },
+      { label: 'Regime fit', value: r.z_regime }, { label: 'Sentiment', value: r.z_sent }], { horizontal: true });
     document.getElementById('ad-buy').addEventListener('click', () => {
       const qty = parseFloat(prompt(`Quantity of ${r.sym} to add (last close ${f.px(r.last)}):`));
       if (!isFinite(qty) || qty <= 0) return;
       const pf2 = AL.store.get('holdings', UI.DEMO_BOOK);
       pf2.push({ sym: r.sym, qty, costBasis: r.last });
-      // if a cash balance exists (wharton mode), pay for the shares out of it
+      // in competition mode, buying spends the virtual cash
       const cash = AL.store.get('cash', null);
       if (cash != null) AL.store.set('cash', cash - qty * r.last);
       AL.store.set('holdings', pf2);
@@ -330,12 +406,12 @@ UI.def('guide', 'How To Use This', '?', 'Start Here', function (el, state) {
     ${g('Never invested before? Do these five things', `
       <b>1. Look at a stock.</b> Press Ctrl+K, type a ticker like AMZN, hit Enter. The chart shows its real price history. The red "drawdown" chart below shows every painful drop it has ever had. That is what owning it feels like.<br><br>
       <b>2. Get recommendations.</b> Open <b>Stock Advisor</b> in the left menu. It ranks every stock using seven factors (explained below) and hands you a suggested starter basket with weights. Click any stock to read the reasoning in plain English.<br><br>
-      <b>3. Build your portfolio.</b> Open <b>My Holdings</b>, press Wharton mode to start with $100,000 of virtual cash, and add positions. The Advisor's "Add to My Holdings" button does this for you and deducts the cash.<br><br>
+      <b>3. Build your portfolio.</b> Open <b>My Holdings</b>, press Competition mode to start with $100,000 of virtual cash, and add positions. The Advisor's "Add to My Holdings" button does this for you and deducts the cash.<br><br>
       <b>4. Stress test it.</b> Open <b>Risk Lab</b>. It replays your exact portfolio through the 2008 crisis, the COVID crash, and Black Monday 1987 using real data, and shows the dollar loss you would have taken. If that number scares you, diversify more.<br><br>
       <b>5. Get the report.</b> In My Holdings, press "Strategy report". You get a written investment strategy document (great for competition submissions) that explains your allocation, risks, and reasoning.`)}
     ${g('Playbook: Wharton Global Investment Competition', `
       The competition gives your team about $100,000 of virtual money and judges you on your <b>strategy and reasoning</b>, not just returns. AlphaLab maps to that directly:<br><br>
-      <b>Step 1.</b> My Holdings, press <b>Wharton mode ($100K)</b>. You now have a clean cash balance.<br>
+      <b>Step 1.</b> My Holdings, press <b>Competition mode ($100K)</b>. You now have a clean cash balance.<br>
       <b>Step 2.</b> Stock Advisor, press Score the universe. Read the top names and their theses. Check each pick's Sentiment tab so you can cite news tone and investor sentiment in your writeup.<br>
       <b>Step 3.</b> Add 8 to 12 positions. Keep any single stock under about 15% and mix sectors; judges reward diversification discipline.<br>
       <b>Step 4.</b> Risk Lab: run the 2008 and COVID replays and the Monte Carlo. Write the worst-case numbers into your strategy document; showing you measured downside is exactly what wins.<br>
@@ -372,12 +448,32 @@ UI.def('guide', 'How To Use This', '?', 'Start Here', function (el, state) {
       <b>Ensemble Engine:</b> makes strategies compete, then blends the uncorrelated winners.<br>
       <b>Alpha Factory:</b> machine-generates candidate trading signals and keeps only the survivors.<br>
       <b>ML Lab:</b> trains machine-learning price models in your browser, honestly walk-forward.<br>
-      <b>Stock Advisor:</b> ranks stocks on seven factors and explains each pick.<br>
+      <b>Stock Advisor:</b> ranks the entire US stock universe on eight factors and explains each pick.<br>
       <b>Sentiment & News:</b> real news tone, social sentiment, and attention data per stock.<br>
+      <b>Market Structure:</b> a map of which stocks actually trade together (PCA plus clustering).<br>
+      <b>Strategy Composer:</b> build your own strategy from dropdowns, no code, full validation pipeline.<br>
+      <b>Seasonality:</b> calendar patterns with the statistics to tell real ones from noise.<br>
+      <b>Drawdown Analyzer:</b> every major historical decline and how long recovery took.<br>
+      <b>Firm Simulator:</b> run a fund through a hidden window of real history with AI analysts.<br>
       <b>Portfolio Builder:</b> professional weighting math (risk parity, minimum variance, and friends).<br>
       <b>My Holdings:</b> your portfolio: profit and loss, risk, AI review, strategy reports.<br>
       <b>Risk Lab:</b> crash simulations on your actual book.<br>
       <b>Reports / Knowledge Base:</b> everything written down and searchable.`)}
+    ${g('The Firm Simulator, how to play', `
+      You found a fund with $10M to $100M and manage it through a hidden three-year stretch of real market history, advancing one week at a time. Deploy capital into validated strategy sleeves and stocks, keep some cash, and press Advance. Real crashes, rate moves and inflation prints arrive exactly as they happened (dates are masked so you cannot look up the answers).<br><br>
+      Three AI analysts read the same real data and argue with you: Nadia (macro) reads vol, rates and credit; Marcus (quant) tracks which sleeves are earning; Priya (risk) polices drawdown, leverage and concentration, and WILL force you to de-risk at a 25% drawdown. Propose allocation changes to the committee, hear the objections, then apply or override.<br><br>
+      You earn 2% management fees plus 20% of profits above the high-water mark. Beat the index and investors subscribe; lag badly and they redeem. At week 156 you get a grade and the reveal of which era you just survived. Losing to the index in 2008 is normal; losing to it in a bull tape is a lesson.`)}
+    ${g('The universe: what stocks are in here', `
+      Two tiers, all real Yahoo Finance data. The full S&P 500 (every constituent, around 500 names) carries 10 years of weekly prices with sector labels. The extended total-market tier covers every listed US common stock above a small size floor (thousands of names, the same coverage idea as a total-market index fund) with 3 years of weekly prices. On top of that, 78 flagship instruments (major stocks, ETFs, futures, FX, crypto) carry full daily history back to 2000 for deep backtesting. The Advisor scores the whole universe; deep strategy backtests run on the daily tier where the data is strongest.`)}
+    ${g('Defending your picks to judges', `
+      Judges do not reward returns; they reward process. For every holding be ready to answer four questions. Why this company? (cite the factor scores: momentum, trend, consistency, sector-relative strength). Why now? (cite the regime readout and the sentiment feeds). What is the risk? (cite its volatility, its worst drawdown from the Drawdown Analyzer, and your position size). When would you sell? (a price level, a factor deterioration, or a regime change, decided in advance). Every one of those numbers is on this site; put them in your strategy report and you will sound like a professional because you will be reasoning like one.`)}
+    ${g('Common beginner mistakes this platform catches', `
+      <b>Chasing a chart that already went up</b>: momentum is real but the Advisor also checks consistency and volatility; a parabolic chart usually scores badly on both.<br>
+      <b>All eggs, one basket</b>: the concentration (HHI) tile and Priya in the simulator both flag it.<br>
+      <b>Confusing a bull market for skill</b>: always compare against SPY; the benchmark line is on every chart for a reason.<br>
+      <b>Trusting a beautiful backtest</b>: the validation gauntlet exists because most beautiful backtests are curve-fit. REJECTED is the system saving you money.<br>
+      <b>Ignoring costs</b>: high-turnover ideas die at 3x costs; check the turnover metric.<br>
+      <b>No exit plan</b>: decide the sell rule when you buy, not during the panic.`)}
     ${g('Reading a verdict without getting fooled', `When a strategy or factor says <b>VALIDATED</b>, it passed five separate honesty checks (works on unseen data, survives triple costs, stable to parameter changes, consistent across years, statistically significant). <b>REJECTED</b> means the edge is not real once costs and statistics are applied, which is the outcome for most ideas, and knowing that is the value. If a number ever looks amazing, distrust it first: check the out-of-sample column and the turnover before you believe anything.`)}
     ${g('Terminal cheat sheet', `<span class="num">CHART AMZN</span> · chart anything<br><span class="num">COMPARE SPY QQQ GLD</span> · overlay up to 4<br><span class="num">BT S001</span> · run a strategy by id<br><span class="num">STRESS 2008</span> · crisis replay (2008, COVID, 2022, DOTCOM, 1987)<br><span class="num">RESEARCH START</span> · wake the AI researcher<br><span class="num">FACTOR SCAN</span> · hunt for new signals<br><span class="num">GO HOLD</span> · jump to any module<br>Press <span class="num">Ctrl+K</span> anywhere for the command palette.`)}
     </div></div>`;
@@ -391,10 +487,10 @@ UI.showWelcome = function () {
   ov.style.cssText = 'position:fixed;inset:0;background:#05070acc;z-index:1001;display:flex;align-items:flex-start;justify-content:center;padding-top:16vh';
   ov.innerHTML = `<div style="width:560px;max-width:92vw;background:#10141a;border:1px solid var(--line2);border-radius:10px;box-shadow:0 24px 80px #000c;padding:26px 30px">
     <div style="font-size:19px;font-weight:650;margin-bottom:8px">Welcome to AlphaLab</div>
-    <div class="note" style="font-size:13px;line-height:1.7;margin-bottom:14px">A research terminal for markets, built on 26 years of real data. You do not need any finance background: the guide explains every screen and every number in plain English, and there is a step-by-step playbook for the Wharton Investment Competition.</div>
+    <div class="note" style="font-size:13px;line-height:1.7;margin-bottom:14px">A research terminal for markets, built on 26 years of real data. You do not need any finance background: the guide explains every screen and every number in plain English, and there is a step-by-step playbook for investment competitions such as Wharton's.</div>
     <div style="display:flex;gap:10px;flex-wrap:wrap">
       <button class="btn primary" id="w-guide">Open the guide</button>
-      <button class="btn" id="w-wharton">Wharton competition setup</button>
+      <button class="btn" id="w-wharton">Competition setup ($100K)</button>
       <button class="btn" id="w-skip">Just explore</button>
     </div></div>`;
   document.body.appendChild(ov);

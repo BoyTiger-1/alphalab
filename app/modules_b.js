@@ -95,7 +95,8 @@ UI.def('strategies', 'Strategy Lab', '⚘', 'Autonomous Research', function (el,
    MODULE: Strategy detail / backtest workbench
    ========================================================= */
 UI.def('stratDetail', 'Strategy', '⚙', 'Autonomous Research', function (el, state, tab) {
-  const entry = S.byId[state.sid];
+  // accepts registry ids or ad-hoc compositions handed over by the Strategy Composer
+  const entry = state.adhoc || S.byId[state.sid];
   if (!entry) { el.innerHTML = '<div class="empty">Unknown strategy.</div>'; return; }
   tab.title = entry.name.length > 26 ? entry.name.slice(0, 24) + '…' : entry.name;
   if (entry.status === 'data') {

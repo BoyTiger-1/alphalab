@@ -77,7 +77,7 @@ UI.boot = function () {
   const groups = {};
   for (const m of Object.values(UI.MODULES)) if (!UI.HIDDEN.has(m.id)) (groups[m.group] = groups[m.group] || []).push(m);
   // guide first so newcomers see it before anything intimidating
-  const groupOrder = ['Start Here', 'Research OS', 'Advisory', 'Autonomous Research', 'Portfolio & Risk', 'Knowledge'];
+  const groupOrder = ['Start Here', 'Research OS', 'Advisory', 'Autonomous Research', 'Quant Toolkit', 'Firm', 'Portfolio & Risk', 'Knowledge'];
   const ordered = groupOrder.filter(g => groups[g]).map(g => [g, groups[g]])
     .concat(Object.entries(groups).filter(([g]) => !groupOrder.includes(g)));
   document.getElementById('rail').innerHTML = ordered.map(([g, mods]) =>
@@ -134,11 +134,11 @@ UI.commands = [
   { cmd: 'ADVISE', desc: 'Open the Stock Advisor (multi-factor recommendations)', fn: () => UI.focusModule('advisor') },
   { cmd: 'SENTIMENT <sym>', desc: 'News tone, social sentiment & attention for a ticker', fn: a => UI.focusModule('sentiment', a[0] ? { sym: a[0].toUpperCase() } : {}) },
   { cmd: 'GUIDE', desc: 'Open the plain-English how-to guide', fn: () => UI.focusModule('guide') },
-  { cmd: 'WHARTON', desc: 'Set up Wharton competition mode ($100K virtual cash)', fn: () => UI.focusModule('holdings', { wharton: true }) },
+  { cmd: 'COMP', desc: 'Set up competition mode ($100K virtual cash)', fn: () => UI.focusModule('holdings', { wharton: true }) },
   { cmd: 'HELP', desc: 'List terminal commands', fn: () => UI.openPalette('') },
 ];
 UI.goCmd = function (a) {
-  const map = { DASH: 'dashboard', MARKETS: 'markets', DATA: 'datahub', AI: 'researcher', ALPHA: 'alpha', STRAT: 'strategies', ML: 'mllab', PORT: 'portfolio', HOLD: 'holdings', RISK: 'risk', REPORTS: 'reports', KB: 'knowledge', ENSEMBLE: 'ensemble' };
+  const map = { DASH: 'dashboard', MARKETS: 'markets', DATA: 'datahub', AI: 'researcher', ALPHA: 'alpha', STRAT: 'strategies', ML: 'mllab', PORT: 'portfolio', HOLD: 'holdings', RISK: 'risk', REPORTS: 'reports', KB: 'knowledge', ENSEMBLE: 'ensemble', FIRM: 'firm', STRUCT: 'structure', COMPOSE: 'composer', SEASON: 'seasonality', DD: 'drawdowns', GUIDE: 'guide' };
   const m = map[(a[0] || '').toUpperCase()];
   if (m) UI.focusModule(m);
 };
@@ -426,36 +426,44 @@ UI.def('markets', 'Markets', '𝄜', 'Research OS', function (el, state) {
   const cls = state.cls || 'All';
   el.innerHTML = `
     <div class="controls">${classes.map(c => `<span class="chip ${c === cls ? 'on' : ''}" data-c="${c}">${c}</span>`).join('')}
-      <span style="flex:1"></span><input class="inp" id="mkt-q" placeholder="filter…" value="${state.q || ''}"></div>
+      <span class="note" id="mkt-cap"></span>
+      <span style="flex:1"></span><input class="inp" id="mkt-q" placeholder="search 4,500+ instruments…" value="${state.q || ''}"></div>
     <div class="panel"><div class="panel-body nopad" style="max-height:calc(100vh - 190px)">
     <table class="tbl" id="mkt-tbl"><thead><tr>
       <th>Symbol</th><th>Name</th><th>Class</th><th class="r">Last</th><th class="r">1D</th><th class="r">1M</th><th class="r">YTD</th><th class="r">Vol 1Y</th><th class="r">Sharpe 1Y</th><th class="r">MaxDD 1Y</th><th class="r">Obs</th>
     </tr></thead><tbody id="mkt-body"></tbody></table></div></div>`;
   const render = () => {
     const q = (document.getElementById('mkt-q').value || '').toUpperCase();
-    const items = AL.catalog().filter(x => (cls === 'All' ? x.cls !== 'Macro' : x.cls === cls))
-      .filter(x => !q || x.sym.toUpperCase().includes(q) || x.name.toUpperCase().includes(q));
+    const all = AL.catalog().filter(x => (cls === 'All' ? x.cls !== 'Macro' : x.cls === cls))
+      .filter(x => !q || x.sym.toUpperCase().includes(q) || x.name.toUpperCase().includes(q) || (x.sector || '').toUpperCase().includes(q));
+    // the full-market catalog is ~4,500 rows; cap the DOM and let search narrow it
+    const items = all.slice(0, 600);
+    const capNote = document.getElementById('mkt-cap');
+    if (capNote) capNote.textContent = all.length > items.length ? `showing ${items.length} of ${all.length.toLocaleString()} instruments, type to search the rest` : `${all.length.toLocaleString()} instruments`;
     const body = document.getElementById('mkt-body');
     body.innerHTML = items.map(x => {
       const ser = AL.getSeries(x.sym);
       const v = ser.values, n = v.length;
       const isMacro = x.cls === 'Macro';
+      // weekly-universe rows use weekly bars, so windows and annualization scale down
+      const isW = !!ser.weekly;
+      const b1m = isW ? 4 : 22, b1y = isW ? 52 : 252, ann = isW ? 52 : 252;
       const d1 = v[n - 1] / v[n - 2] - 1;
-      const m1 = n > 22 ? v[n - 1] / v[n - 22] - 1 : null;
+      const m1 = n > b1m ? v[n - 1] / v[n - b1m] - 1 : null;
       const y0 = ser.dates.findIndex(d => d >= AL.asof.slice(0, 4) + '-01-01');
       const ytd = y0 > 0 ? v[n - 1] / v[y0] - 1 : null;
       let vol = null, sh = null, dd = null;
-      if (!isMacro && n > 260) {
+      if (!isMacro && n > b1y + 8) {
         const r = [];
-        for (let i = n - 252; i < n; i++) r.push(v[i] / v[i - 1] - 1);
-        vol = Q.std(r) * Math.sqrt(252);
-        sh = vol ? (Q.mean(r) * 252 - 0.02) / vol : null;
+        for (let i = n - b1y; i < n; i++) r.push(v[i] / v[i - 1] - 1);
+        vol = Q.std(r) * Math.sqrt(ann);
+        sh = vol ? (Q.mean(r) * ann - 0.02) / vol : null;
         dd = Math.min(...Q.drawdownSeries(Q.equity(r)));
       }
       const f = AL.fmt;
-      return `<tr data-sym="${x.sym}"><td class="sym">${x.sym}</td><td class="t">${f.esc(x.name)}</td><td class="t">${x.cls}</td>
+      return `<tr data-sym="${x.sym}"><td class="sym">${x.sym}</td><td class="t">${f.esc(x.name)}${x.sector ? ` <span style="color:var(--muted);font-size:10px">${f.esc(x.sector)}</span>` : ''}</td><td class="t">${x.cls}${isW ? ' (W)' : ''}</td>
         <td class="r" data-v="${v[n - 1]}">${f.px(v[n - 1])}</td>
-        <td class="r ${f.cls(d1)}" data-v="${d1}">${isMacro ? '-' : f.spct(d1)}</td>
+        <td class="r ${f.cls(d1)}" data-v="${d1}">${isMacro ? '-' : f.spct(d1) + (isW ? ' w' : '')}</td>
         <td class="r ${f.cls(m1)}" data-v="${m1}">${isMacro ? '-' : f.spct(m1)}</td>
         <td class="r ${f.cls(ytd)}" data-v="${ytd}">${isMacro ? '-' : f.spct(ytd)}</td>
         <td class="r" data-v="${vol}">${vol ? f.pct(vol, 1) : '-'}</td>
@@ -481,7 +489,10 @@ UI.def('chart', 'Chart', '▲', 'Research OS', function (el, state, tab) {
   tab.title = sym + ' Chart';
   const range = state.range || '2Y';
   const mode = state.mode || (AL.ohlc(sym) ? 'candles' : 'line');
-  const ranges = { '6M': 126, '1Y': 252, '2Y': 504, '5Y': 1260, '10Y': 2520, MAX: 1e9 };
+  const isW = !!ser.weekly;   // extended-universe symbols carry weekly bars
+  const ranges = isW
+    ? { '6M': 26, '1Y': 52, '2Y': 104, '5Y': 260, '10Y': 520, MAX: 1e9 }
+    : { '6M': 126, '1Y': 252, '2Y': 504, '5Y': 1260, '10Y': 2520, MAX: 1e9 };
   const lc = AL.lastClose(sym);
   const compare = state.compare || [];
   el.innerHTML = `
@@ -500,11 +511,11 @@ UI.def('chart', 'Chart', '▲', 'Research OS', function (el, state, tab) {
       ${UI.panel(compare.length ? 'Indexed comparison (100 = window start)' : 'Price', '<div class="chart h340" id="ch-main"></div>', { nopad: true })}
       <div class="grid g3">
         ${UI.panel('Drawdown', '<div class="chart h180" id="ch-dd"></div>')}
-        ${UI.panel('Rolling 63d annualized vol', '<div class="chart h180" id="ch-vol"></div>')}
+        ${UI.panel(`Rolling ${AL.getSeries(sym).weekly ? '13w' : '63d'} annualized vol`, '<div class="chart h180" id="ch-vol"></div>')}
         ${UI.panel('Daily return distribution', '<div class="chart h180" id="ch-hist"></div>')}
       </div>
       <div class="grid g2">
-        ${UI.panel('Rolling 126d beta vs SPY', '<div class="chart h180" id="ch-beta"></div>')}
+        ${UI.panel(`Rolling ${AL.getSeries(sym).weekly ? '26w' : '126d'} beta vs SPY`, '<div class="chart h180" id="ch-beta"></div>')}
         ${UI.panel('Window statistics', '<div id="ch-stats"></div>')}
       </div>
     </div>`;
@@ -531,14 +542,23 @@ UI.def('chart', 'Chart', '▲', 'Research OS', function (el, state, tab) {
   }
   const rets = [];
   for (let i = 1; i < w.values.length; i++) rets.push(w.values[i] / w.values[i - 1] - 1);
+  const ann = isW ? 52 : 252;
   C.line(document.getElementById('ch-dd'), [{ name: 'DD', dates: w.dates, values: Q.drawdownSeries(w.values), color: C.DN, fill: true }], { pct: true, zeroLine: true });
-  C.line(document.getElementById('ch-vol'), [{ name: 'vol', dates: w.dates.slice(1), values: Q.rollStd(rets, 63).map(x => x * Math.sqrt(252)), color: C.SERIES[2] }], { pct: true });
+  C.line(document.getElementById('ch-vol'), [{ name: 'vol', dates: w.dates.slice(1), values: Q.rollStd(rets, isW ? 13 : 63).map(x => x * Math.sqrt(ann)), color: C.SERIES[2] }], { pct: true });
   C.histogram(document.getElementById('ch-hist'), rets, { pct: true });
-  const spy = AL.returns('SPY');
-  const smap = new Map(spy.dates.map((d, i) => [d, spy.values[i]]));
-  const svals = w.dates.slice(1).map(d => smap.get(d) ?? 0);
-  C.line(document.getElementById('ch-beta'), [{ name: 'β', dates: w.dates.slice(1), values: Q.rollBeta(rets, svals, 126), color: C.SERIES[4] }], { zeroLine: true });
-  const p = Q.perf(rets);
+  // beta needs the benchmark on the same bar grid; resample SPY weekly for weekly symbols
+  let svals;
+  if (isW) {
+    const wv = AL.weeklyValues('SPY');
+    const wmap = new Map(AL.sp500().wcal.map((d, i) => [d, wv[i]]));
+    svals = w.dates.slice(1).map((d, i) => { const a = wmap.get(d), b = wmap.get(w.dates[i]); return a && b ? a / b - 1 : 0; });
+  } else {
+    const spy = AL.returns('SPY');
+    const smap = new Map(spy.dates.map((d, i) => [d, spy.values[i]]));
+    svals = w.dates.slice(1).map(d => smap.get(d) ?? 0);
+  }
+  C.line(document.getElementById('ch-beta'), [{ name: 'β', dates: w.dates.slice(1), values: Q.rollBeta(rets, svals, isW ? 26 : 126), color: C.SERIES[4] }], { zeroLine: true });
+  const p = Q.perf(rets, { ann });
   document.getElementById('ch-stats').innerHTML = p ? UI.metricsFor(p) : '<div class="empty">Window too short</div>';
   el.querySelectorAll('.chip[data-r]').forEach(c => c.addEventListener('click', () => { state.range = c.dataset.r; UI.renderActive(); }));
   el.querySelectorAll('.chip[data-m]').forEach(c => c.addEventListener('click', () => { state.mode = c.dataset.m; UI.renderActive(); }));
