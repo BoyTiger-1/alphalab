@@ -42,7 +42,7 @@ function niceTicks(lo, hi, n = 5) {
 }
 
 function fmtVal(v, opts = {}) {
-  if (v == null || !isFinite(v)) return '—';
+  if (v == null || !isFinite(v)) return '-';
   if (opts.pct) return (v * 100).toFixed(Math.abs(v) < 0.005 ? 2 : 1) + '%';
   if (Math.abs(v) >= 1e6) return AL.fmt.usd(v).replace('$', opts.usd ? '$' : '');
   return AL.fmt.px(v);
@@ -65,7 +65,7 @@ C.line = function (el, series, opts = {}) {
   if (!el || !series.length) return;
   const { ctx, W, H, cv } = setupCanvas(el);
   const padL = 8, padR = 54, padT = 10, padB = 20;
-  // align on union? assume same date axis for all (caller aligns) — use first series dates
+  // align on union? assume same date axis for all (caller aligns), use first series dates
   const dates = series[0].dates;
   const n = dates.length;
   if (!n) return;
@@ -439,7 +439,7 @@ C.heatmap = function (el, matrix, rowLabels, colLabels, opts = {}) {
     if (i < 0 || i >= nr || j < 0 || j >= nc) { C.hideTip(); return; }
     const t = tip();
     const v = matrix[i][j];
-    t.innerHTML = `<div class="tip-row">${AL.fmt.esc(rowLabels[i])} × ${AL.fmt.esc(colLabels[j])}<b>${v == null ? '—' : (opts.fmt ? opts.fmt(v) : v.toFixed(3))}</b></div>`;
+    t.innerHTML = `<div class="tip-row">${AL.fmt.esc(rowLabels[i])} × ${AL.fmt.esc(colLabels[j])}<b>${v == null ? '-' : (opts.fmt ? opts.fmt(v) : v.toFixed(3))}</b></div>`;
     t.style.display = 'block';
     t.style.left = Math.min(ev.clientX + 14, window.innerWidth - t.offsetWidth - 8) + 'px';
     t.style.top = (ev.clientY + 14) + 'px';

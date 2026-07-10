@@ -1,163 +1,200 @@
-# AlphaLab — Autonomous Quantitative Research OS
+# AlphaLab, an Autonomous Quantitative Research OS
 
-**A Bloomberg-terminal-style quant research platform that runs entirely in your browser, on real market data. One HTML file. No server, no API keys, no install.**
+**A Bloomberg-terminal-style research platform that runs entirely in your browser, on real market data. One HTML file. No server, no API keys, no install. Built for serious research and for competitions like the Wharton Global Investment Competition.**
 
 <p>
-  <a href="https://boytiger-1.github.io/alphalab/"><b>▶ Launch AlphaLab</b></a> ·
-  <a href="#quick-start">Quick start</a> ·
-  <a href="#terminal-commands">Terminal commands</a> ·
+  <a href="https://boytiger-1.github.io/alphalab/"><b>Launch AlphaLab</b></a> ·
+  <a href="#new-to-investing-start-here">Beginner guide</a> ·
+  <a href="#wharton-investment-competition-playbook">Wharton playbook</a> ·
+  <a href="#stock-advisor-and-sentiment-intelligence">Stock Advisor</a> ·
+  <a href="#terminal-commands">Commands</a> ·
   <a href="#the-modules">Modules</a> ·
-  <a href="#strategy-catalog">Strategy catalog</a> ·
-  <a href="#rebuilding-with-fresh-data">Refresh data</a> ·
   <a href="#faq--troubleshooting">FAQ</a>
 </p>
 
 ![Command Center](docs/screenshots/command-center.png)
 
-## What it is
+## What it does
 
 AlphaLab does the work of a quantitative research team in a single self-contained page:
 
-- **118 strategy research modules** — trend, momentum, stat-arb pairs, relative value, volatility, factor investing, macro/regime, seasonality, crypto, machine learning, portfolio allocation — each independently configurable and backtestable
-- **An autonomous AI researcher** that generates hypotheses, backtests them, validates them through a 5-stage statistical gauntlet, and files every result (including failures) into a persistent knowledge base so it never repeats a dead end
-- **An alpha discovery engine** that composes candidate factors from a transformation grammar and admits only those that survive IC testing, out-of-sample checks, and redundancy filters
-- **An ML lab** (ridge, logistic, gradient-boosted stumps, k-NN, MLP) trained walk-forward in-browser in seconds
-- **Portfolio optimizers** — Equal Risk Contribution, Hierarchical Risk Parity, minimum variance, max Sharpe, half-Kelly, Black-Litterman — with efficient frontiers and 10-year backtests
-- **A risk laboratory** — crisis replay on *actual* historical windows (2008, COVID, 2022, dot-com, Black Monday 1987), Monte Carlo on your real book, VaR/CVaR ladders, empirical rate-shock betas
-- **Institutional report generation** — every strategy produces a methodology-to-conclusion research report, exportable to PDF
+- **Stock Advisor**: ranks every stock in the universe on seven factors (momentum, trend, risk-adjusted return, volatility, consistency, market-regime fit, and real sentiment) and explains each pick in plain English, with suggested position sizes and confidence levels
+- **Real sentiment intelligence**: worldwide news tone and coverage volume from GDELT, investor social sentiment from StockTwits, and public attention from Wikipedia pageviews, bundled per ticker and refreshable live from the browser
+- **Portfolio management**: enter or CSV-import any portfolio, track it against real closing prices, get an AI review with statistical justification, and generate a written Investment Strategy Report ready to print
+- **Wharton competition mode**: one click gives you $100,000 of virtual cash with full buy/sell cash accounting
+- **118 strategy research modules**: trend, momentum, pairs arbitrage, volatility, factor investing, macro, seasonality, crypto, machine learning, and allocation, each backtestable with honest costs and a 5-stage validation gauntlet
+- **An autonomous AI researcher** that invents hypotheses, tests them on real history, and files every result (including failures) into a persistent knowledge base
+- **A risk laboratory**: replay your exact portfolio through 2008, COVID, 2022, the dot-com crash, and Black Monday 1987, plus Monte Carlo simulation, VaR ladders, and rate-shock sensitivities
+- **A built-in guide** that explains every screen and every number in plain English, written for people who have never invested before
 
-**All of it computes live on real data**: 78 instruments with daily history back to 2000 (S&P 500 back to 1970) from Yahoo Finance, 22 macro/rates series from FRED, and 8 crypto pairs from Coinbase, bundled into the file as an offline snapshot. The as-of date is always shown in the top bar.
+Everything computes on real data: 78 instruments with daily history back to 2000 (S&P 500 back to 1970) from Yahoo Finance, 22 macro series from FRED, 8 crypto pairs from Coinbase, and news/social/attention feeds from GDELT, StockTwits, and Wikipedia. Nothing is simulated. A GitHub Action refreshes the whole snapshot on weekday mornings.
 
-## Quick start
+## New to investing? Start here
 
-1. **Open https://boytiger-1.github.io/alphalab/** (or download [`dist/alphalab.html`](dist/alphalab.html) and double-click it — it works offline).
-2. **Press `Ctrl+K`** and type `CHART NVDA`. Then try `STRESS 2008`.
-3. On the dashboard, click **▶ Start Autonomous Research** and watch the researcher work through hypotheses in the live feed.
-4. Open **Strategy Lab** → click any strategy → **Run backtest + gauntlet** → **Generate research report**.
-5. Open **My Holdings**, replace the demo positions with yours (**+ Add position**), then run the **AI portfolio review** and visit **Risk Lab** to stress-test your actual book.
+The site opens with a welcome screen that points you to **How To Use This** in the left menu. That guide contains a five-step walkthrough, a dictionary of every financial term on the site (Sharpe ratio, drawdown, VaR, beta, backtest, and the rest), a description of what every module is for, and a warning section on how to read results without fooling yourself. You need zero finance background.
 
-Everything you do — experiments, holdings, reports, dashboard layout, factor library — persists in your browser's localStorage. Nothing ever leaves your machine.
+The short version:
+
+1. Press `Ctrl+K`, type a ticker like `AMZN`, press Enter. That is the stock's real history, including every painful drop.
+2. Open **Stock Advisor** and press "Score the universe". Read the plain-English reasoning on each pick.
+3. Open **My Holdings**, press **Wharton mode ($100K)**, and add positions (the Advisor can add them for you and deducts the cash).
+4. Open **Risk Lab** and see what 2008 or COVID would have done to your exact portfolio, in dollars.
+5. Back in My Holdings, press **Strategy report** for a written investment strategy document.
+
+## Wharton Investment Competition playbook
+
+The Wharton Global Investment Competition gives teams roughly $100,000 in virtual cash and judges **strategy and reasoning**, not just returns. AlphaLab maps to that directly:
+
+| Competition need | Where it lives in AlphaLab |
+|---|---|
+| Manage a $100K virtual portfolio | My Holdings, Wharton mode: cash accounting on every buy and sell at real closes |
+| Pick stocks with defendable reasons | Stock Advisor: seven-factor scores plus a written thesis per stock you can cite |
+| Show sentiment/news awareness | Sentiment & News desk: real GDELT news tone, StockTwits crowd lean, Wikipedia attention |
+| Demonstrate risk management | Risk Lab: crisis replays, Monte Carlo, VaR; the numbers judges want to see quantified |
+| Submit a strategy document | My Holdings, Strategy report: objectives, per-holding rationale, risk analysis, benchmarks, monitoring plan, printable to PDF |
+| Rebalance with discipline | AI portfolio review flags concentration, beta drift, and regime changes weekly |
+
+The in-app guide has the full six-step playbook. Edit the generated report in your own voice before submitting.
+
+## Stock Advisor and sentiment intelligence
+
+The Advisor scores the full equity universe on:
+
+1. **Momentum**: 6-month return with a 2-week skip
+2. **Trend**: distance from the 200-day moving average
+3. **Sharpe**: 1-year risk-adjusted return
+4. **Low volatility**: calmer names score higher
+5. **Consistency**: share of positive months over 3 years
+6. **Regime fit**: the platform detects the market regime with a hidden Markov model and favors aggressive names in calm tapes, defensive names in stress
+7. **Sentiment**: a composite of GDELT news tone trend, StockTwits bullish/bearish message mix, and Wikipedia attention spikes
+
+Each recommendation shows the factor breakdown, a bootstrap next-quarter return range from the stock's own real history, statistical confidence, correlation to your current holdings (does it actually diversify you), and a plain-English thesis. Suggested basket weights are inverse-volatility with a cap near 18% per name. Every screen repeats the honest framing: these are ranked research views of historical and sentiment data, not predictions, and AlphaLab never executes trades.
+
+The **Sentiment & News** desk shows the raw feeds per ticker and has a "Refresh live" button that re-pulls Wikipedia and GDELT straight from your browser when online (the bundled snapshot is the fallback).
+
+![Strategy workbench](docs/screenshots/strategy-workbench.png)
 
 ## Terminal commands
 
-Press `Ctrl+K` anywhere, or type into the amber command box in the top bar.
+Press `Ctrl+K` anywhere, or type into the command box in the top bar.
 
 | Command | What it does |
 |---|---|
-| `CHART <sym>` | Open a chart workspace — candles/line, log scale, drawdown, rolling vol & beta, return distribution. Any bundled symbol works: `CHART BTC-USD`, `CHART ^VIX`, `CHART CL=F` |
-| `COMPARE <a> <b> [c] [d]` | Indexed comparison chart (100 = window start) |
-| `BT <id>` | Open a strategy's backtest workbench, e.g. `BT S001` |
-| `RESEARCH START` / `RESEARCH STOP` | Engage / pause the autonomous researcher |
-| `FACTOR SCAN` | Generate and gauntlet-test 25 candidate alpha factors |
+| `CHART <sym>` | Chart workspace: candles, drawdown, rolling vol and beta, return distribution |
+| `COMPARE <a> <b> [c] [d]` | Indexed comparison chart |
+| `ADVISE` | Open the Stock Advisor |
+| `SENTIMENT <sym>` | News tone, social sentiment, and attention for a ticker |
+| `WHARTON` | Set up Wharton competition mode ($100K virtual cash) |
+| `GUIDE` | Open the plain-English guide |
+| `BT <id>` | Open a strategy backtest workbench, e.g. `BT S001` |
+| `RESEARCH START` / `STOP` | Engage or pause the autonomous researcher |
+| `FACTOR SCAN` | Generate and test 25 candidate alpha factors |
 | `STRESS <scenario>` | Crisis replay: `2008`, `COVID`, `2022`, `DOTCOM`, `1987` |
-| `GO <module>` | Jump to a module: `DASH`, `MARKETS`, `DATA`, `AI`, `ALPHA`, `STRAT`, `ML`, `PORT`, `HOLD`, `RISK`, `REPORTS`, `KB` |
+| `GO <module>` | Jump anywhere: `DASH`, `MARKETS`, `DATA`, `AI`, `ALPHA`, `STRAT`, `ML`, `PORT`, `HOLD`, `RISK`, `REPORTS`, `KB` |
 | *(any symbol)* | Typing a known symbol charts it directly |
 
-Deep links also work: `…/alphalab.html#risk`, `#strat=S035`, `#chart=GLD`.
+Deep links work too: `#risk`, `#advisor`, `#guide`, `#strat=S035`, `#chart=GLD`.
 
 ## The modules
 
 | Module | What you do there |
 |---|---|
-| **Command Center** | Market overview: regime monitor (2-state Gaussian HMM fit live on S&P returns), real yield curve, sector momentum, cross-asset correlations, VIX vs realized vol. Drag panels (⠿) to customize; layout persists |
-| **Markets** | Sortable screener of every instrument with real 1D/1M/YTD returns, vol, Sharpe, max drawdown |
-| **Data Hub** | Dataset catalog, data-quality audit, and **CSV upload** — any date+value CSV is cleaned, validated, and becomes a first-class instrument in every module |
-| **AI Researcher** | The autonomous loop: live pipeline stages, searchable experiment database, per-experiment metrics |
-| **Strategy Lab** | The 118-module library. Open → edit parameters → backtest → validation gauntlet → research report |
-| **Ensemble Engine** | Runs a 24-strategy competition on the trailing 3 years, scores Sharpe / regime fit / confidence, and builds an inverse-vol blend of uncorrelated winners |
-| **Alpha Factory** | Factor generation grammar (~450 unique specs) + IC gauntlet + persistent factor library with redundancy filtering |
-| **ML Lab** | Walk-forward model training with IC, hit rate, quintile analysis, permutation feature importance |
-| **Portfolio Builder** | Asset selection → 7 optimizers → weights, risk contributions, efficient frontier, 10y backtest |
-| **My Holdings** | Your real positions valued at real closes: P&L, factor betas, concentration (HHI), benchmark comparison, tax-loss-harvest candidates, AI review with statistical justification |
-| **Risk Lab** | Crisis replay, 2,000-path block-bootstrap Monte Carlo, VaR ladder, rate-shock sensitivities, custom macro scenarios |
-| **Reports** | All generated research documents; print to PDF |
-| **Knowledge Base** | Institutional memory: every validated finding and every dead end, searchable, with verdicts grouped by market regime |
+| **How To Use This** | The full plain-English manual: five-step start, Wharton playbook, term dictionary, module map |
+| **Command Center** | Market overview: regime monitor, yield curve, sector momentum, correlations. Drag panels to customize |
+| **Markets** | Sortable screener of every instrument with real return/vol/Sharpe/drawdown stats |
+| **Data Hub** | Dataset catalog, quality audit, CSV upload (your file becomes a first-class instrument) |
+| **Stock Advisor** | Seven-factor stock recommendations with written theses and suggested weights |
+| **Sentiment & News** | Real news tone, coverage volume, social sentiment, and attention per ticker, with live refresh |
+| **AI Researcher** | The autonomous hypothesis loop with its experiment database |
+| **Strategy Lab** | 118 strategy modules: configure, backtest, validate, generate reports |
+| **Ensemble Engine** | Strategy competition and inverse-vol blending of uncorrelated winners |
+| **Alpha Factory** | Machine-generated trading signals pushed through an IC gauntlet |
+| **ML Lab** | Walk-forward model training with honest out-of-sample diagnostics |
+| **Portfolio Builder** | Professional optimizers: risk parity, HRP, minimum variance, Black-Litterman, Kelly |
+| **My Holdings** | Your portfolio: P&L at real closes, cash accounting, CSV import, factor betas, AI review, strategy reports |
+| **Risk Lab** | Crisis replays on real windows, Monte Carlo, VaR ladder, rate shocks, custom scenarios |
+| **Reports / Knowledge Base** | Every document and every finding, searchable and printable |
 
-![Strategy workbench](docs/screenshots/strategy-workbench.png)
+![Risk Lab, 2008 crisis replay](docs/screenshots/risk-lab.png)
 
-## How validation works (read this before trusting a backtest)
+## How validation works (read before trusting any backtest)
 
-Every backtest applies a **1-day signal lag** (decide on tonight's close, trade tomorrow) and **linear transaction costs** per unit of turnover. A strategy is marked **VALIDATED** only if it passes *all five* gauntlet checks:
+Every backtest applies a 1-day signal lag and linear transaction costs. A strategy is **VALIDATED** only if it passes all five checks: positive out-of-sample Sharpe on the final 30% of history, probabilistic Sharpe ratio above 85%, survival at triple costs, parameter-perturbation stability, and positive Sharpe in most calendar years. Most strategies get **REJECTED**. That is the platform working as intended: the Visa/Mastercard pairs module finds genuine cointegration (ADF near -4.3) yet still fails net of costs, which is the honest answer.
 
-1. **Out-of-sample consistency** — positive Sharpe on the final 30% of history it was never tuned on
-2. **Probabilistic Sharpe Ratio > 85%** — the skew/kurtosis-adjusted probability that true Sharpe exceeds zero (Bailey & López de Prado)
-3. **Cost stress** — still profitable at 3× assumed transaction costs
-4. **Parameter stability** — median Sharpe across ±20% parameter perturbations stays meaningful
-5. **Sub-period consistency** — positive Sharpe in most calendar years
-
-Most strategies get **REJECTED**. That's the platform working as intended — e.g. the Visa/Mastercard pairs module finds genuine cointegration (Engle-Granger ADF ≈ −4.3) yet still fails net of costs, which is the honest answer.
-
-![Risk Lab — 2008 crisis replay](docs/screenshots/risk-lab.png)
+![ML Lab](docs/screenshots/ml-lab.png)
 
 ## Strategy catalog
 
 | Category | Count | Examples |
 |---|---|---|
-| Trend Following | 12 | Golden Cross, Donchian breakouts (gold, crude, natgas), multi-asset managed futures, FX trend |
-| Momentum | 12 | 12-1 time-series momentum, Jegadeesh-Titman cross-sectional, dual momentum (GEM), sector rotation |
-| Mean Reversion | 10 | RSI(2), Bollinger reversion, VIX-spike contrarian, weekly reversal |
-| Stat Arb / Pairs | 10 | V/MA, JPM/BAC, XOM/CVX, gold/silver — with live Engle-Granger cointegration diagnostics |
-| Relative Value | 7 | Small/large spread, HY/IG credit RV, defensives vs cyclicals |
+| Trend Following | 12 | Golden Cross, Donchian breakouts, multi-asset managed futures, FX trend |
+| Momentum | 12 | 12-1 time-series momentum, cross-sectional momentum, dual momentum, sector rotation |
+| Mean Reversion | 10 | RSI(2), Bollinger reversion, VIX-spike contrarian |
+| Stat Arb / Pairs | 10 | V/MA, JPM/BAC, gold/silver, with live cointegration diagnostics |
+| Relative Value | 7 | Size spread, credit RV, defensives vs cyclicals |
 | Volatility | 8 | Vol targeting, variance-risk-premium harvest, HMM regime switching |
-| Factor Investing | 8 | Momentum/quality/min-vol tilts, value-growth spread, multi-factor ERC blend |
-| Macro / Regime | 10 | Yield-curve recession guard, credit-spread switch, Fed cycle, dollar regime for EM |
-| Carry / Seasonality | 7 | Turn-of-month, Halloween effect, natgas winter seasonal, bond carry |
-| Crypto | 8 | BTC trend/momentum/vol-targeting, ETH/BTC ratio, cross-sectional crypto momentum |
-| Machine Learning | 8 | Ridge, logistic, boosted stumps, k-NN, MLP, ensemble vote — all walk-forward |
-| Allocation | 6 | 60/40, Permanent Portfolio, All-Weather, ERC, HRP, min-variance |
-| Event-Driven & Alt-Data | 12 | Merger arb, PEAD, insider momentum, satellite imagery… **documented but deliberately inactive** — they need external datasets that can't be honestly simulated; connect one via the Data Hub to activate |
-
-![ML Lab](docs/screenshots/ml-lab.png)
+| Factor Investing | 8 | Momentum/quality/min-vol tilts, value-growth spread, multi-factor blends |
+| Macro / Regime | 10 | Yield-curve recession guard, credit-spread switch, Fed cycle, dollar regime |
+| Carry / Seasonality | 7 | Turn-of-month, Halloween effect, commodity seasonals |
+| Crypto | 8 | BTC trend, vol targeting, ETH/BTC rotation, cross-sectional momentum |
+| Machine Learning | 8 | Ridge, logistic, boosted stumps, k-NN, MLP, ensemble vote, all walk-forward |
+| Allocation | 6 | 60/40, Permanent Portfolio, All-Weather, ERC, HRP, minimum variance |
+| Event-Driven and Alt-Data | 12 | Merger arb, PEAD, insider momentum: documented but deliberately inactive until you connect the required dataset, because faking that data would produce untrustworthy research |
 
 ## Rebuilding with fresh data
 
-The bundled snapshot is static (its date is in the top bar). A GitHub Action ([refresh-data.yml](.github/workflows/refresh-data.yml)) refreshes it on weekday mornings and redeploys the site automatically — or run it locally:
+A GitHub Action ([refresh-data.yml](.github/workflows/refresh-data.yml)) refreshes everything on weekday mornings and redeploys the site. To run it locally:
 
 ```bash
-python tools/download_data.py        # Yahoo + FRED + Coinbase → data/raw/  (stdlib + curl only)
+python tools/download_data.py        # Yahoo + FRED + Coinbase price/macro history
 python tools/download_data_meta.py   # instrument metadata
-python tools/build_bundle.py         # → data/bundle.js  (integer-scaled, ~4.3 MB)
-python tools/assemble.py             # → dist/alphalab.html  (the whole app, one file)
+python tools/download_altdata.py     # GDELT news + StockTwits + Wikipedia attention
+python tools/build_bundle.py         # compact integer-scaled data bundle
+python tools/assemble.py             # everything into dist/alphalab.html
 node tools/smoke.js                  # 24-check test suite against the real bundle
 ```
+
+Python 3 stdlib plus curl only. No pip installs.
 
 ## Architecture
 
 ```
 app/
-  core.js        data access layer, CSV ingestion, persistence, formatting
-  quant.js       stats, performance analytics (Sharpe/Sortino/VaR/CVaR/PSR…),
-                 backtester, HMM regime model, optimizers (ERC/HRP/BL/frontier), Monte Carlo
-  charts.js      canvas chart library (candles, lines, heatmaps, fans) with crosshair tooltips
-  strategies.js  signal engines + backtest runner + validation gauntlet
+  core.js        data access, CSV ingestion, persistence, formatting
+  quant.js       stats, performance analytics, backtester, HMM regime model,
+                 optimizers (ERC/HRP/BL/frontier), Monte Carlo
+  charts.js      canvas chart library with crosshair tooltips
+  strategies.js  signal engines, backtest runner, validation gauntlet
   registry.js    the 118 strategy definitions
-  factors.js     alpha discovery grammar + IC gauntlet + factor library
-  ml.js          in-browser models, walk-forward engine, permutation importance
-  researcher.js  autonomous hypothesis loop + research database + report builder
-  modules_*.js   the 15 UI workspaces
-data/bundle.js   the real-data snapshot (one shared trading calendar, integer-scaled prices)
-tools/           downloader · bundler · assembler · smoke tests
+  factors.js     alpha discovery grammar and factor library
+  ml.js          in-browser models and walk-forward engine
+  researcher.js  autonomous hypothesis loop and report builder
+  modules_*.js   the UI workspaces (incl. Advisor, Sentiment, Guide, Wharton mode)
+data/
+  bundle.js      the market-data snapshot (shared trading calendar, integer-scaled)
+  altdata.js     the news/social/attention snapshot
+tools/           downloaders, bundler, assembler, smoke tests
 ```
 
-No frameworks, no dependencies, no network calls at runtime. The assembler concatenates everything into `dist/alphalab.html`.
+No frameworks, no runtime dependencies. The assembler concatenates everything into one file.
 
 ## FAQ / troubleshooting
 
-**Is the data real?** Yes — every price, yield, and macro print is downloaded history from Yahoo Finance, FRED, and Coinbase. Nothing is simulated. The trade-off: it's a snapshot, not a live feed (see the as-of date in the top bar).
+**Is the data real?** Yes. Prices from Yahoo Finance, macro from FRED, crypto from Coinbase, news tone from GDELT, social sentiment from StockTwits, attention from Wikipedia. Nothing is simulated. The trade-off is that the bundle is a snapshot (its date is in the top bar); the CI refresh keeps the hosted copy current, and the Sentiment desk can pull live from the browser.
 
-**Why did my strategy get REJECTED?** Because it failed at least one gauntlet check — usually out-of-sample decay or cost stress. Open the Validation Gauntlet panel on the strategy page to see exactly which one. This is a feature.
+**Will it tell me what to buy?** The Advisor ranks and explains; it does not command. Every recommendation ships with the factor evidence, a confidence level, and a reminder that the decision is yours. AlphaLab never places trades.
 
-**Where is my work saved?** In your browser's localStorage, keyed per site origin. Clearing site data wipes the knowledge base (there's also a "Wipe knowledge base" button in the Knowledge Base module).
+**Why did my strategy get REJECTED?** It failed at least one gauntlet check, usually out-of-sample decay or cost stress. The gauntlet panel shows exactly which one. This is a feature.
 
-**The page is slow to load the first time.** It's a 4.6 MB file (26 years × 108 series of data). After the first visit it's cached.
+**Where is my work saved?** In your browser's localStorage. Clearing site data wipes it (there is also a reset button in the Knowledge Base).
 
-**Can it trade for me?** No, by design. AlphaLab produces research with confidence intervals; execution decisions stay with you.
+**The page loads slowly the first time.** It is a single file carrying 26 years of data for 108 series. It caches after the first visit.
 
-**A backtest number looks too good.** Suspect it. Check turnover (costs scale with it), the OOS column, and the PSR. If it still looks too good, open an issue — leakage bugs are the most valuable ones to report.
+**A backtest number looks too good.** Distrust it first: check turnover, the out-of-sample column, and the PSR. If it still looks wrong, open an issue; leakage bugs are the most valuable reports.
 
 ## Disclaimer
 
-Research software for educational and analytical use. Backtests are historical estimates subject to sampling error, survivorship effects, and cost-model simplification. Nothing here is investment advice.
+Research and educational software. All statistics are historical estimates subject to sampling error, survivorship effects, and cost-model simplification. Nothing here is investment advice, and the platform never executes trades.
 
 ## License
 

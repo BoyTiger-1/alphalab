@@ -27,6 +27,9 @@ jobs:
           python tools/download_data.py
           python tools/download_data_meta.py
 
+      - name: Download alt-data (Wikipedia / GDELT / StockTwits)
+        run: python tools/download_altdata.py || echo "alt-data refresh failed, keeping previous snapshot"
+
       - name: Rebuild data bundle and assemble app
         run: |
           python tools/build_bundle.py
@@ -40,7 +43,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add data/bundle.js dist/alphalab.html docs/index.html
+          git add data/bundle.js data/altdata.js dist/alphalab.html docs/index.html
           if git diff --cached --quiet; then
             echo "No data changes."
           else

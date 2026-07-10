@@ -85,7 +85,7 @@ RS.STAGES = ['Design', 'Data audit', 'Execution', 'Validation gauntlet', 'Verdic
 RS.startAuto = function () {
   if (RS.state.running) return;
   RS.state.running = true;
-  RS.pushLog('Autonomous research loop engaged — generating hypotheses from live market structure.', 'sys');
+  RS.pushLog('Autonomous research loop engaged, generating hypotheses from live market structure.', 'sys');
   AL.bus.emit('res:update');
   RS._next();
 };
@@ -111,7 +111,7 @@ RS.runExperiment = function (hypo, done) {
   db.experiments.push(exp);
   RS.saveDb(db);
   RS.state.current = exp;
-  RS.pushLog(`${id} · NEW HYPOTHESIS — ${hypo.title}`, 'hypo');
+  RS.pushLog(`${id} · NEW HYPOTHESIS, ${hypo.title}`, 'hypo');
   AL.bus.emit('res:update');
 
   const advance = (stage, fn, delay = 350) => setTimeout(() => {
@@ -133,7 +133,7 @@ RS.runExperiment = function (hypo, done) {
         RS._validate(hypo, exp, res);
         advance(4, () => { // verdict & filing
           RS._file(exp);
-          RS.pushLog(`${id} · VERDICT: ${exp.verdict} — ${exp.summary || ''}`, exp.verdict === 'VALIDATED' ? 'good' : exp.verdict === 'REJECTED' ? 'bad' : 'warn');
+          RS.pushLog(`${id} · VERDICT: ${exp.verdict}, ${exp.summary || ''}`, exp.verdict === 'VALIDATED' ? 'good' : exp.verdict === 'REJECTED' ? 'bad' : 'warn');
           done && done();
         }, 300);
       }, 400);
@@ -228,14 +228,14 @@ RS._validate = function (hypo, exp, res) {
       paramStability: res.perturbed.length ? Q.quantile(res.perturbed.map(p => p.sharpe), 0.5) : null,
       positiveYearShare: res.posYears,
     } : null;
-    exp.summary = res && res.full.stats ? `SR ${res.full.stats.sharpe.toFixed(2)} (OOS ${res.oos ? res.oos.sharpe.toFixed(2) : '—'}), PSR ${(res.psr * 100).toFixed(0)}%, maxDD ${(res.full.stats.maxDD * 100).toFixed(0)}%` : 'no result';
+    exp.summary = res && res.full.stats ? `SR ${res.full.stats.sharpe.toFixed(2)} (OOS ${res.oos ? res.oos.sharpe.toFixed(2) : '-'}), PSR ${(res.psr * 100).toFixed(0)}%, maxDD ${(res.full.stats.maxDD * 100).toFixed(0)}%` : 'no result';
   } else if (hypo.kind === 'factor') {
     if (!res) { exp.verdict = 'ERROR'; return; }
     const red = F.redundancy(hypo.spec, F.library().map(f => f.spec));
     exp.metrics.maxCorrLib = red.maxCorr;
     if (res.verdict === 'ADMITTED' && red.maxCorr > 0.85) {
       exp.verdict = 'REDUNDANT';
-      exp.summary = `IC ${res.avgIC.toFixed(3)} but ${(red.maxCorr * 100).toFixed(0)}% correlated with “${red.against}” — not added.`;
+      exp.summary = `IC ${res.avgIC.toFixed(3)} but ${(red.maxCorr * 100).toFixed(0)}% correlated with “${red.against}”, not added.`;
     } else {
       exp.verdict = res.verdict === 'ADMITTED' ? 'VALIDATED' : res.verdict === 'WATCHLIST' ? 'MARGINAL' : 'REJECTED';
       exp.summary = `IC ${res.avgIC.toFixed(3)} (OOS ${res.avgOOS.toFixed(3)}), sign-consistent on ${(res.consistency * 100).toFixed(0)}% of universe.`;
@@ -256,9 +256,9 @@ RS._file = function (exp) {
   RS.saveDb(db);
   const kb = RS.kb();
   if (exp.key) kb.triedKeys[exp.key] = { verdict: exp.verdict, ts: exp.ts };
-  // knowledge notes for failures — avoid repeating unsuccessful paths
-  if (exp.verdict === 'REJECTED') kb.notes.push({ ts: exp.ts, note: `Rejected: ${exp.title} — ${exp.summary || 'failed gauntlet'} (regime: ${exp.regime})` });
-  if (exp.verdict === 'VALIDATED') kb.notes.push({ ts: exp.ts, note: `Validated: ${exp.title} — ${exp.summary} (regime: ${exp.regime})` });
+  // knowledge notes for failures, avoid repeating unsuccessful paths
+  if (exp.verdict === 'REJECTED') kb.notes.push({ ts: exp.ts, note: `Rejected: ${exp.title}, ${exp.summary || 'failed gauntlet'} (regime: ${exp.regime})` });
+  if (exp.verdict === 'VALIDATED') kb.notes.push({ ts: exp.ts, note: `Validated: ${exp.title}, ${exp.summary} (regime: ${exp.regime})` });
   if (kb.notes.length > 300) kb.notes.splice(0, kb.notes.length - 300);
   RS.saveKb(kb);
   RS.state.count++;
@@ -290,7 +290,7 @@ RS.buildReport = function (entry, val) {
     `Implementation: annualized turnover ${f.n(val.full.turnover, 1)}×, average gross exposure ${f.pct(val.full.avgExposure ?? 1)}.`,
   ].join('\n')]);
   secs.push(['Validation gauntlet', [
-    `In-sample Sharpe ${f.n(val.is ? val.is.sharpe : NaN)} vs out-of-sample ${f.n(val.oos ? val.oos.sharpe : NaN)} — ${val.oos && val.oos.sharpe > 0 ? 'sign preserved out-of-sample' : 'OOS deterioration detected'}.`,
+    `In-sample Sharpe ${f.n(val.is ? val.is.sharpe : NaN)} vs out-of-sample ${f.n(val.oos ? val.oos.sharpe : NaN)}, ${val.oos && val.oos.sharpe > 0 ? 'sign preserved out-of-sample' : 'OOS deterioration detected'}.`,
     `Probabilistic Sharpe Ratio (skew/kurtosis-adjusted probability that true SR > 0): ${f.pct(val.psr)}.`,
     `Cost stress (3× assumed costs): Sharpe ${f.n(val.cost2 ? val.cost2.sharpe : NaN)}.`,
     `Parameter perturbation (±20% on each window): median Sharpe ${val.perturbed.length ? f.n(Q.quantile(val.perturbed.map(p => p.sharpe), 0.5)) : 'n/a'} across ${val.perturbed.length} variants.`,
@@ -302,15 +302,15 @@ RS.buildReport = function (entry, val) {
   }
   secs.push(['Limitations & assumptions',
     'Backtests use daily closes; intraday slippage beyond the linear cost model is not simulated. Adjusted prices embed dividend reinvestment. ' +
-    'Survivorship effects are limited (universe is current large-liquid instruments — a mild positive bias for long strategies). ' +
+    'Survivorship effects are limited (universe is current large-liquid instruments, a mild positive bias for long strategies). ' +
     'Parameter choices, while stress-tested, were selected with knowledge of history; live performance should be expected to degrade toward the OOS estimate. Past performance does not guarantee future results.']);
   secs.push(['Conclusion',
     val.verdict === 'VALIDATED'
       ? `The strategy passes all five gauntlet checks. The evidence is consistent with a real, cost-surviving inefficiency. Recommended next steps: paper-trade tracking, capacity analysis at target AUM, and inclusion in ensemble optimization.`
       : val.verdict === 'MARGINAL'
-        ? `The strategy shows a positive but fragile edge — it fails at least one robustness check. Retain on the watchlist; do not allocate. Re-evaluate when regime shifts.`
+        ? `The strategy shows a positive but fragile edge, it fails at least one robustness check. Retain on the watchlist; do not allocate. Re-evaluate when regime shifts.`
         : `The null hypothesis cannot be rejected: the apparent edge does not survive validation. Filed in the knowledge base to prevent re-testing equivalent specifications.`]);
-  return { title: `${entry.name} — Quantitative Research Report`, entryId: entry.id, date: new Date().toISOString().slice(0, 10), sections: secs.map(([h, body]) => ({ h, body })), verdict: val.verdict };
+  return { title: `${entry.name}, Quantitative Research Report`, entryId: entry.id, date: new Date().toISOString().slice(0, 10), sections: secs.map(([h, body]) => ({ h, body })), verdict: val.verdict };
 };
 function describeUniverse(entry) {
   const def = entry.def || {};

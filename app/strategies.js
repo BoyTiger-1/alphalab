@@ -5,7 +5,7 @@
 const S = window.S = {};
 
 /* =========================================================
-   SIGNAL ENGINES — each returns weights BEFORE lagging.
+   SIGNAL ENGINES, each returns weights BEFORE lagging.
    Single-asset engines: (px, rets, p, aux) -> weights[]
    ========================================================= */
 S.engines = {

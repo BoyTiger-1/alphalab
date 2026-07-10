@@ -60,7 +60,7 @@ UI.renderActive = function () {
   C.hideTip();
   const tab = UI.currentTab();
   document.querySelectorAll('.rail-item').forEach(r => r.classList.toggle('active', tab && r.dataset.mod === tab.module));
-  if (!tab) { ws.innerHTML = '<div class="empty">No workspace open — press <b>Ctrl+K</b> or pick a module from the rail.</div>'; return; }
+  if (!tab) { ws.innerHTML = '<div class="empty">No workspace open, press <b>Ctrl+K</b> or pick a module from the rail.</div>'; return; }
   ws.innerHTML = '';
   try { UI.MODULES[tab.module].render(ws, tab.state, tab); }
   catch (e) { console.error(e); ws.innerHTML = `<div class="empty">Module error: ${AL.fmt.esc(e.message)}</div>`; }
@@ -76,7 +76,11 @@ UI.boot = function () {
   // rail
   const groups = {};
   for (const m of Object.values(UI.MODULES)) if (!UI.HIDDEN.has(m.id)) (groups[m.group] = groups[m.group] || []).push(m);
-  document.getElementById('rail').innerHTML = Object.entries(groups).map(([g, mods]) =>
+  // guide first so newcomers see it before anything intimidating
+  const groupOrder = ['Start Here', 'Research OS', 'Advisory', 'Autonomous Research', 'Portfolio & Risk', 'Knowledge'];
+  const ordered = groupOrder.filter(g => groups[g]).map(g => [g, groups[g]])
+    .concat(Object.entries(groups).filter(([g]) => !groupOrder.includes(g)));
+  document.getElementById('rail').innerHTML = ordered.map(([g, mods]) =>
     `<div class="rail-group"><div class="rail-head">${g}</div>` +
     mods.map(m => `<div class="rail-item" data-mod="${m.id}"><span class="ico">${m.ico}</span>${m.name}</div>`).join('') + '</div>').join('');
   document.querySelectorAll('.rail-item').forEach(r => r.addEventListener('click', () => UI.focusModule(r.dataset.mod)));
@@ -100,6 +104,7 @@ UI.boot = function () {
   else if (hash.startsWith('strat=')) UI.openTab('stratDetail', { sid: hash.slice(6).toUpperCase() });
   else if (UI.MODULES[hash]) UI.openTab(hash);
   else UI.openTab('dashboard');
+  if (UI.showWelcome) UI.showWelcome();   // first-visit onboarding, defined in modules_d
   // fun: greet in feed
   RS.pushLog(`AlphaLab research OS online. ${Object.keys(AL.D.series).length + Object.keys(AL.D.crypto).length} instruments, ${Object.keys(AL.D.fred).length} macro series loaded (as-of ${AL.asof}).`, 'sys');
 };
@@ -126,6 +131,10 @@ UI.commands = [
   { cmd: 'FACTOR SCAN', desc: 'Generate & test 25 candidate alpha factors', fn: () => UI.focusModule('alpha', { autoscan: true }) },
   { cmd: 'STRESS <scenario>', desc: 'Risk lab crisis replay: 2008, COVID, DOTCOM, 1987, 2022', fn: a => UI.focusModule('risk', { scenario: (a[0] || '2008').toUpperCase() }) },
   { cmd: 'REGIME', desc: 'Show current detected market regime', fn: () => UI.focusModule('dashboard') },
+  { cmd: 'ADVISE', desc: 'Open the Stock Advisor (multi-factor recommendations)', fn: () => UI.focusModule('advisor') },
+  { cmd: 'SENTIMENT <sym>', desc: 'News tone, social sentiment & attention for a ticker', fn: a => UI.focusModule('sentiment', a[0] ? { sym: a[0].toUpperCase() } : {}) },
+  { cmd: 'GUIDE', desc: 'Open the plain-English how-to guide', fn: () => UI.focusModule('guide') },
+  { cmd: 'WHARTON', desc: 'Set up Wharton competition mode ($100K virtual cash)', fn: () => UI.focusModule('holdings', { wharton: true }) },
   { cmd: 'HELP', desc: 'List terminal commands', fn: () => UI.openPalette('') },
 ];
 UI.goCmd = function (a) {
@@ -179,9 +188,9 @@ UI.renderPalette = function (q) {
   // symbols
   if (qq.length >= 1) {
     const cat = AL.catalog().filter(x => x.sym.toUpperCase().includes(qq) || x.name.toUpperCase().includes(qq)).slice(0, 8);
-    items = items.concat(cat.map(x => ({ label: x.sym, desc: `${x.name} — chart (${x.cls}, ${x.src})`, run: () => UI.openTab('chart', { sym: x.sym, forceNew: true }, x.sym + ' Chart') })));
+    items = items.concat(cat.map(x => ({ label: x.sym, desc: `${x.name}, chart (${x.cls}, ${x.src})`, run: () => UI.openTab('chart', { sym: x.sym, forceNew: true }, x.sym + ' Chart') })));
     const strats = S.registry.filter(s => s.name.toUpperCase().includes(qq) || s.id === qq).slice(0, 6);
-    items = items.concat(strats.map(s => ({ label: s.id, desc: `${s.name} — open strategy module`, run: () => UI.openTab('stratDetail', { sid: s.id, forceNew: true }, s.name) })));
+    items = items.concat(strats.map(s => ({ label: s.id, desc: `${s.name}, open strategy module`, run: () => UI.openTab('stratDetail', { sid: s.id, forceNew: true }, s.name) })));
   }
   items = items.slice(0, 14);
   list.innerHTML = items.map((it, i) => `<div class="pal-item ${i === 0 ? 'sel' : ''}" data-i="${i}"><span class="pi-cmd">${AL.fmt.esc(it.label)}</span><span class="pi-desc">${AL.fmt.esc(it.desc)}</span></div>`).join('') || '<div class="empty">No matches</div>';
@@ -295,10 +304,10 @@ UI.def('dashboard', 'Command Center', '◧', 'Research OS', function (el, state,
         <div class="kv"><span class="k">Realized vol (20d / 1y)</span><span class="v">${f.pct(r.vol20)} / ${f.pct(r.vol252)}</span></div>
         <div class="kv"><span class="k">VIX (CBOE)</span><span class="v">${f.n(r.vix, 1)}</span></div>
         <div class="kv"><span class="k">10Y−2Y curve</span><span class="v ${r.curve >= 0 ? 'up' : 'dn'}">${f.n(r.curve, 2)}%</span></div>
-        <div class="kv"><span class="k">HY credit spread (OAS)</span><span class="v">${r.hySpread != null ? f.n(r.hySpread, 2) + '%' : '—'}</span></div>
+        <div class="kv"><span class="k">HY credit spread (OAS)</span><span class="v">${r.hySpread != null ? f.n(r.hySpread, 2) + '%' : '-'}</span></div>
         <div class="note" style="margin-top:8px">Strategy engines consume this regime state when the ensemble allocator scores methodologies.</div>`, { drag: true, attrs: 'data-pid="regime" draggable="true"' });
     },
-    spx: () => UI.panel('S&P 500 — 2Y Daily Candles <span class="badge dim">real OHLC · Yahoo</span>', '<div class="chart h300" id="dash-spx"></div>', { drag: true, attrs: 'data-pid="spx" draggable="true"', nopad: true }),
+    spx: () => UI.panel('S&P 500, 2Y Daily Candles <span class="badge dim">real OHLC · Yahoo</span>', '<div class="chart h300" id="dash-spx"></div>', { drag: true, attrs: 'data-pid="spx" draggable="true"', nopad: true }),
     tiles2: () => {
       const rows = [['^GSPC', '^NDX', '^DJI', '^RUT'], ['DGS2', 'DGS10', 'DGS30', 'T10Y2Y']];
       let h = '<table class="tbl"><thead><tr><th>Series</th><th class="r">Last</th><th class="r">1M Δ</th><th class="r">YTD</th></tr></thead><tbody>';
@@ -317,17 +326,17 @@ UI.def('dashboard', 'Command Center', '◧', 'Research OS', function (el, state,
       return UI.panel('Indices & Rates', h + '</tbody></table>', { drag: true, attrs: 'data-pid="tiles2" draggable="true"', nopad: true });
     },
     curve: () => UI.panel('US Treasury Yield Curve <span class="badge dim">FRED</span>', '<div class="chart h220" id="dash-curve"></div>', { drag: true, attrs: 'data-pid="curve" draggable="true"' }),
-    sectors: () => UI.panel('Sector Momentum — trailing 1M return', '<div class="chart h260" id="dash-sectors"></div>', { drag: true, attrs: 'data-pid="sectors" draggable="true"' }),
+    sectors: () => UI.panel('Sector Momentum, trailing 1M return', '<div class="chart h260" id="dash-sectors"></div>', { drag: true, attrs: 'data-pid="sectors" draggable="true"' }),
     corr: () => UI.panel('Cross-Asset Correlation (63d, daily returns)', '<div class="chart h260" id="dash-corr"></div>', { drag: true, attrs: 'data-pid="corr" draggable="true"' }),
-    vix: () => UI.panel('Volatility Complex — VIX vs Realized', '<div class="chart h220" id="dash-vix"></div>', { drag: true, attrs: 'data-pid="vix" draggable="true"' }),
+    vix: () => UI.panel('Volatility Complex, VIX vs Realized', '<div class="chart h220" id="dash-vix"></div>', { drag: true, attrs: 'data-pid="vix" draggable="true"' }),
     movers: () => {
       const uni = AL.LIQUID;
       const rows = uni.map(s => { const lc = AL.lastClose(s); return { s, chg: lc.chg }; }).sort((a, b) => b.chg - a.chg);
       const pick = rows.slice(0, 5).concat(rows.slice(-5));
-      return UI.panel('Top Movers — Liquid Universe (1D)', '<table class="tbl"><tbody>' +
+      return UI.panel('Top Movers, Liquid Universe (1D)', '<table class="tbl"><tbody>' +
         pick.map(r => `<tr data-sym="${r.s}"><td class="sym">${r.s}</td><td class="t">${AL.fmt.esc(AL.getSeries(r.s).name)}</td><td class="r ${r.chg >= 0 ? 'up' : 'dn'}">${AL.fmt.spct(r.chg)}</td></tr>`).join('') + '</tbody></table>', { drag: true, attrs: 'data-pid="movers" draggable="true"', nopad: true });
     },
-    feed: () => UI.panel('AI Researcher — Live Activity <span id="dash-res-badge"></span>', `<div class="feed" id="dash-feed" style="max-height:220px;overflow-y:auto"></div>
+    feed: () => UI.panel('AI Researcher, Live Activity <span id="dash-res-badge"></span>', `<div class="feed" id="dash-feed" style="max-height:220px;overflow-y:auto"></div>
       <div style="margin-top:8px;display:flex;gap:8px"><button class="btn primary small" id="dash-res-toggle"></button>
       <button class="btn small" onclick="UI.focusModule('researcher')">Open Research Desk →</button></div>`, { drag: true, attrs: 'data-pid="feed" draggable="true"' }),
   };
@@ -405,7 +414,7 @@ UI.def('dashboard', 'Command Center', '◧', 'Research OS', function (el, state,
   });
 });
 UI.renderFeed = function (el) {
-  el.innerHTML = RS.log.slice(-60).map(l => `<div class="fl ${l.kind}"><span class="ft">${l.t}</span><span class="fm">${AL.fmt.esc(l.msg)}</span></div>`).join('') || '<div class="empty">Researcher idle — press Start.</div>';
+  el.innerHTML = RS.log.slice(-60).map(l => `<div class="fl ${l.kind}"><span class="ft">${l.t}</span><span class="fm">${AL.fmt.esc(l.msg)}</span></div>`).join('') || '<div class="empty">Researcher idle, press Start.</div>';
   el.scrollTop = el.scrollHeight;
 };
 
@@ -446,12 +455,12 @@ UI.def('markets', 'Markets', '𝄜', 'Research OS', function (el, state) {
       const f = AL.fmt;
       return `<tr data-sym="${x.sym}"><td class="sym">${x.sym}</td><td class="t">${f.esc(x.name)}</td><td class="t">${x.cls}</td>
         <td class="r" data-v="${v[n - 1]}">${f.px(v[n - 1])}</td>
-        <td class="r ${f.cls(d1)}" data-v="${d1}">${isMacro ? '—' : f.spct(d1)}</td>
-        <td class="r ${f.cls(m1)}" data-v="${m1}">${isMacro ? '—' : f.spct(m1)}</td>
-        <td class="r ${f.cls(ytd)}" data-v="${ytd}">${isMacro ? '—' : f.spct(ytd)}</td>
-        <td class="r" data-v="${vol}">${vol ? f.pct(vol, 1) : '—'}</td>
-        <td class="r ${f.cls(sh)}" data-v="${sh}">${sh != null ? f.n(sh) : '—'}</td>
-        <td class="r dn" data-v="${dd}">${dd != null ? f.pct(dd, 1) : '—'}</td>
+        <td class="r ${f.cls(d1)}" data-v="${d1}">${isMacro ? '-' : f.spct(d1)}</td>
+        <td class="r ${f.cls(m1)}" data-v="${m1}">${isMacro ? '-' : f.spct(m1)}</td>
+        <td class="r ${f.cls(ytd)}" data-v="${ytd}">${isMacro ? '-' : f.spct(ytd)}</td>
+        <td class="r" data-v="${vol}">${vol ? f.pct(vol, 1) : '-'}</td>
+        <td class="r ${f.cls(sh)}" data-v="${sh}">${sh != null ? f.n(sh) : '-'}</td>
+        <td class="r dn" data-v="${dd}">${dd != null ? f.pct(dd, 1) : '-'}</td>
         <td class="r" data-v="${x.n}">${x.n.toLocaleString()}</td></tr>`;
     }).join('');
     body.querySelectorAll('tr').forEach(r => r.addEventListener('click', () => UI.openTab('chart', { sym: r.dataset.sym, forceNew: true }, r.dataset.sym + ' Chart')));

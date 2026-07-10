@@ -164,16 +164,16 @@ AL.gauss = function (rand) { // Box-Muller
 
 /* ---------- formatting ---------- */
 const fmt = AL.fmt = {
-  n(x, d = 2) { return x == null || !isFinite(x) ? '—' : x.toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d }); },
+  n(x, d = 2) { return x == null || !isFinite(x) ? '-' : x.toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d }); },
   px(x) {
-    if (x == null || !isFinite(x)) return '—';
+    if (x == null || !isFinite(x)) return '-';
     const d = Math.abs(x) >= 1000 ? 1 : Math.abs(x) >= 10 ? 2 : 4;
     return x.toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
   },
-  pct(x, d = 2) { return x == null || !isFinite(x) ? '—' : (x * 100).toFixed(d) + '%'; },
-  spct(x, d = 2) { return x == null || !isFinite(x) ? '—' : (x >= 0 ? '+' : '') + (x * 100).toFixed(d) + '%'; },
+  pct(x, d = 2) { return x == null || !isFinite(x) ? '-' : (x * 100).toFixed(d) + '%'; },
+  spct(x, d = 2) { return x == null || !isFinite(x) ? '-' : (x >= 0 ? '+' : '') + (x * 100).toFixed(d) + '%'; },
   usd(x) {
-    if (x == null || !isFinite(x)) return '—';
+    if (x == null || !isFinite(x)) return '-';
     const a = Math.abs(x);
     if (a >= 1e12) return '$' + (x / 1e12).toFixed(2) + 'T';
     if (a >= 1e9) return '$' + (x / 1e9).toFixed(2) + 'B';

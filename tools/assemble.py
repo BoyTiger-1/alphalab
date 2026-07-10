@@ -9,6 +9,7 @@ os.makedirs(DIST, exist_ok=True)
 PARTS = {
     "/*__CSS__*/": os.path.join(APP, "styles.css"),
     "/*__DATA__*/": os.path.join(ROOT, "data", "bundle.js"),
+    "/*__ALTDATA__*/": os.path.join(ROOT, "data", "altdata.js"),
     "/*__CORE__*/": os.path.join(APP, "core.js"),
     "/*__QUANT__*/": os.path.join(APP, "quant.js"),
     "/*__CHARTS__*/": os.path.join(APP, "charts.js"),
@@ -20,10 +21,14 @@ PARTS = {
     "/*__MODULES_A__*/": os.path.join(APP, "modules_a.js"),
     "/*__MODULES_B__*/": os.path.join(APP, "modules_b.js"),
     "/*__MODULES_C__*/": os.path.join(APP, "modules_c.js"),
+    "/*__MODULES_D__*/": os.path.join(APP, "modules_d.js"),
 }
 
 html = open(os.path.join(APP, "index.html"), encoding="utf-8").read()
 for marker, path in PARTS.items():
+    if marker == "/*__ALTDATA__*/" and not os.path.exists(path):
+        html = html.replace(marker, "/* no altdata bundle in this build */")
+        continue
     src = open(path, encoding="utf-8").read()
     if "</script" in src.lower():
         raise SystemExit(f"refusing: {path} contains </script>")

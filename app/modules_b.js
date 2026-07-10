@@ -18,7 +18,7 @@ UI.def('researcher', 'AI Researcher', '☍', 'Autonomous Research', function (el
       <button class="btn" id="res-once">Run single experiment</button>
     </div>
     <div class="info-box" style="margin-bottom:12px">The researcher generates hypotheses (strategy evaluations, alpha-factor candidates, cointegration scans, ensemble blends), executes them on real historical data, pushes each through a 5-stage validation gauntlet (out-of-sample split · probabilistic Sharpe · 3× cost stress · parameter perturbation · sub-period consistency), files every result in the research database, and never re-tests a specification the knowledge base has already rejected.</div>
-    ${cur ? UI.panel(`Current experiment — ${cur.id}`, `
+    ${cur ? UI.panel(`Current experiment, ${cur.id}`, `
       <div style="font-weight:600;margin-bottom:2px">${AL.fmt.esc(cur.title)}</div>
       <div class="note" style="margin-bottom:6px">${AL.fmt.esc(cur.hypothesis)}</div>
       <div class="stages">${RS.STAGES.map((s, i) => `<div class="stage ${i < cur.stage ? 'done' : i === cur.stage ? 'now' : ''}">${s}</div>`).join('')}</div>`) : ''}
@@ -28,11 +28,11 @@ UI.def('researcher', 'AI Researcher', '☍', 'Autonomous Research', function (el
         `<div style="max-height:calc(100vh - 320px);overflow:auto"><table class="tbl"><thead><tr><th>ID</th><th>Type</th><th>Hypothesis subject</th><th class="r">Key metric</th><th class="r">Verdict</th><th class="r">Filed</th></tr></thead><tbody>` +
         (exps.map(e => {
           const m = e.metrics || {};
-          const key = e.kind === 'factor' ? (m.avgIC != null ? 'IC ' + m.avgIC.toFixed(3) : '—')
-            : m.sharpe != null ? 'SR ' + m.sharpe.toFixed(2) : '—';
+          const key = e.kind === 'factor' ? (m.avgIC != null ? 'IC ' + m.avgIC.toFixed(3) : '-')
+            : m.sharpe != null ? 'SR ' + m.sharpe.toFixed(2) : '-';
           return `<tr data-exp="${e.id}"><td class="sym">${e.id}</td><td class="t">${e.kind}</td><td class="t" style="max-width:280px;overflow:hidden;text-overflow:ellipsis">${AL.fmt.esc(e.title)}</td>
             <td class="r">${key}</td><td class="r"><span class="badge ${e.verdict || 'dim'}">${e.verdict || e.status}</span></td><td class="r">${e.ts.slice(5)}</td></tr>`;
-        }).join('') || '<tr><td colspan="6"><div class="empty">No experiments yet — start the loop.</div></td></tr>') + '</tbody></table></div>', { nopad: true })}
+        }).join('') || '<tr><td colspan="6"><div class="empty">No experiments yet, start the loop.</div></td></tr>') + '</tbody></table></div>', { nopad: true })}
       <div style="display:flex;flex-direction:column;gap:12px;min-width:0">
         ${UI.panel('Live research log', `<div class="feed" id="res-feed" style="max-height:300px;overflow-y:auto"></div>`)}
         ${UI.panel('Experiment detail', `<div id="exp-detail"><div class="empty">Select an experiment.</div></div>`)}
@@ -51,8 +51,8 @@ UI.def('researcher', 'AI Researcher', '☍', 'Autonomous Research', function (el
     document.getElementById('exp-detail').innerHTML = `
       <div style="font-weight:600">${e.id} · ${f.esc(e.title)} <span class="badge ${e.verdict}">${e.verdict}</span></div>
       <div class="note" style="margin:6px 0">${f.esc(e.hypothesis)}</div>
-      <div class="note" style="margin-bottom:6px"><b>Data:</b> ${f.esc(e.dataNote || '—')}</div>
-      <div class="note" style="margin-bottom:6px"><b>Regime at test:</b> ${e.regime || '—'} · <b>Finding:</b> ${f.esc(e.summary || '—')}</div>
+      <div class="note" style="margin-bottom:6px"><b>Data:</b> ${f.esc(e.dataNote || '-')}</div>
+      <div class="note" style="margin-bottom:6px"><b>Regime at test:</b> ${e.regime || '-'} · <b>Finding:</b> ${f.esc(e.summary || '-')}</div>
       ${rows}
       ${e.kind === 'strategy' && S.byId[e.subject] ? `<button class="btn small primary" style="margin-top:8px" onclick="UI.openTab('stratDetail',{sid:'${e.subject}',forceNew:true},'${f.esc(S.byId[e.subject].name)}')">Open full research module →</button>` : ''}`;
   }));
@@ -75,14 +75,14 @@ UI.def('strategies', 'Strategy Lab', '⚘', 'Autonomous Research', function (el,
     <table class="tbl" id="st-tbl"><thead><tr><th>ID</th><th>Strategy</th><th>Category</th><th>Universe</th><th class="r">Sharpe*</th><th class="r">CAGR*</th><th class="r">MaxDD*</th><th class="r">Status</th></tr></thead><tbody>` +
     list.map(s => {
       const sc = scores[s.id];
-      const uni = s.def ? (s.def.sym || (s.def.syms || s.def.universe || []).slice(0, 3).join(', ') + ((s.def.universe || []).length > 3 ? '…' : '')) : '—';
+      const uni = s.def ? (s.def.sym || (s.def.syms || s.def.universe || []).slice(0, 3).join(', ') + ((s.def.universe || []).length > 3 ? '…' : '')) : '-';
       return `<tr data-sid="${s.id}"><td class="sym">${s.id}</td><td class="t" style="font-weight:600">${AL.fmt.esc(s.name)}</td><td class="t">${s.cat}</td><td>${AL.fmt.esc(uni)}</td>
         <td class="r ${sc ? AL.fmt.cls(sc.sharpe) : ''}" data-v="${sc ? sc.sharpe : ''}">${sc ? AL.fmt.n(sc.sharpe) : '·'}</td>
         <td class="r" data-v="${sc ? sc.cagr : ''}">${sc ? AL.fmt.spct(sc.cagr) : '·'}</td>
         <td class="r dn" data-v="${sc ? sc.maxDD : ''}">${sc ? AL.fmt.pct(sc.maxDD, 1) : '·'}</td>
         <td class="r">${s.status === 'ok' ? '<span class="badge ok">READY</span>' : '<span class="badge data">NEEDS DATA</span>'}</td></tr>`;
     }).join('') + `</tbody></table></div></div>
-    <div class="note" style="margin-top:8px">* cached from your last run of each module — open a strategy to (re)compute on real data. Click headers to sort.</div>`;
+    <div class="note" style="margin-top:8px">* cached from your last run of each module, open a strategy to (re)compute on real data. Click headers to sort.</div>`;
   el.querySelectorAll('.chip').forEach(c => c.addEventListener('click', () => { state.cat = c.dataset.c; UI.renderActive(); }));
   el.querySelectorAll('tr[data-sid]').forEach(r => r.addEventListener('click', () => {
     const s = S.byId[r.dataset.sid];
@@ -213,11 +213,11 @@ UI.def('stratDetail', 'Strategy', '⚙', 'Autonomous Research', function (el, st
 UI.def('ensemble', 'Ensemble Engine', '⛖', 'Autonomous Research', function (el, state, tab) {
   const lb = AL.store.get('leaderboard', null);
   el.innerHTML = `
-    <div class="section-title">Ensemble Engine — Strategy Competition
+    <div class="section-title">Ensemble Engine, Strategy Competition
       <span style="flex:1"></span>
       <button class="btn primary" id="lb-run">Run competition (24 modules, ~30s)</button></div>
-    <div class="info-box" style="margin-bottom:12px">The allocator runs a representative slate of strategy modules over the recent 3-year window on real data, scores them on out-of-window Sharpe, drawdown, turnover and regime fit (current regime: <b>${Q.marketRegime().label}</b>), then builds an inverse-vol ensemble from the top-ranked, low-correlation sleeves — with expected alpha and confidence estimates for each.</div>
-    <div id="lb-body">${lb ? '' : '<div class="empty">No competition results yet — press Run.</div>'}</div>`;
+    <div class="info-box" style="margin-bottom:12px">The allocator runs a representative slate of strategy modules over the recent 3-year window on real data, scores them on out-of-window Sharpe, drawdown, turnover and regime fit (current regime: <b>${Q.marketRegime().label}</b>), then builds an inverse-vol ensemble from the top-ranked, low-correlation sleeves, with expected alpha and confidence estimates for each.</div>
+    <div id="lb-body">${lb ? '' : '<div class="empty">No competition results yet, press Run.</div>'}</div>`;
   if (lb) renderLB(lb);
   document.getElementById('lb-run').addEventListener('click', () => {
     const slate = ['S001', 'S006', 'S013', 'S018', 'S019', 'S020', 'S025', 'S026', 'S031', 'S035', 'S041', 'S045', 'S052', 'S053', 'S056', 'S058', 'S062', 'S070', 'S073', 'S078', 'S083', 'S088', 'S099', 'S102'].filter(id => S.byId[id] && S.byId[id].status === 'ok');
@@ -280,7 +280,7 @@ UI.def('ensemble', 'Ensemble Engine', '⛖', 'Autonomous Research', function (el
       const lb2 = { ts: AL.asof, regime: Q.marketRegime().label, results: results.map(({ rets, ...r }) => r), chosen: chosen.map((c, k) => ({ id: c.id, name: c.name, w: weights[k], sharpe3y: c.sharpe3y, conf: c.conf })), combStats: combStats ? { sharpe: combStats.sharpe, cagr: combStats.cagr, maxDD: combStats.maxDD, vol: combStats.vol } : null };
       AL.store.set('leaderboard', lb2);
       if (UI.stillActive(tab)) { UI.renderActive(); }
-      RS.pushLog(`Ensemble competition complete: ${results.length} modules scored, ${chosen.length} sleeves selected (blend SR ${combStats ? combStats.sharpe.toFixed(2) : '—'}).`, 'good');
+      RS.pushLog(`Ensemble competition complete: ${results.length} modules scored, ${chosen.length} sleeves selected (blend SR ${combStats ? combStats.sharpe.toFixed(2) : '-'}).`, 'good');
     };
     step();
   });
@@ -288,7 +288,7 @@ UI.def('ensemble', 'Ensemble Engine', '⛖', 'Autonomous Research', function (el
     const f = AL.fmt;
     document.getElementById('lb-body').innerHTML = `
       <div class="grid g23">
-        ${UI.panel(`Leaderboard — trailing 3y, real data <span class="badge dim">regime at scoring: ${lb.regime}</span>`,
+        ${UI.panel(`Leaderboard, trailing 3y, real data <span class="badge dim">regime at scoring: ${lb.regime}</span>`,
           `<div style="max-height:440px;overflow:auto"><table class="tbl"><thead><tr><th>#</th><th>Module</th><th>Category</th><th class="r">SR 3y</th><th class="r">SR full</th><th class="r">CAGR 3y</th><th class="r">MaxDD</th><th class="r">Regime fit</th><th class="r">Confidence</th><th class="r">Score</th></tr></thead><tbody>` +
           lb.results.map((r, i) => `<tr data-sid="${r.id}"><td>${i + 1}</td><td class="t" style="font-weight:600">${f.esc(r.name)}</td><td class="t">${r.cat}</td>
             <td class="r ${f.cls(r.sharpe3y)}">${f.n(r.sharpe3y)}</td><td class="r">${f.n(r.sharpeFull)}</td><td class="r ${f.cls(r.cagr3y)}">${f.spct(r.cagr3y)}</td>
@@ -324,7 +324,7 @@ UI.def('alpha', 'Alpha Factory', '∿', 'Autonomous Research', function (el, sta
       <div style="display:flex;flex-direction:column;gap:12px;min-width:0">
         ${UI.panel('Scan results', '<div id="af-out"><div class="empty">Run a scan to generate candidates.</div></div>', { nopad: false })}
         ${UI.panel(`Factor library <span class="badge dim">${lib.length} admitted</span>`, `<div style="max-height:300px;overflow:auto"><table class="tbl"><thead><tr><th>Factor</th><th class="r">IC</th><th class="r">OOS IC</th><th class="r">Consistency</th><th class="r">Max ρ lib</th><th class="r">Added</th></tr></thead><tbody>` +
-          (lib.map(fc => `<tr data-fkey="${fc.key}"><td class="t">${AL.fmt.esc(fc.name)}</td><td class="r ${AL.fmt.cls(fc.avgIC)}">${fc.avgIC.toFixed(3)}</td><td class="r">${fc.avgOOS.toFixed(3)}</td><td class="r">${AL.fmt.pct(fc.consistency, 0)}</td><td class="r">${fc.maxCorr != null ? AL.fmt.pct(fc.maxCorr, 0) : '—'}</td><td class="r">${fc.added.slice(5, 10)}</td></tr>`).join('') || '<tr><td colspan="6"><div class="empty">Library empty.</div></td></tr>') + '</tbody></table></div>', { nopad: true })}
+          (lib.map(fc => `<tr data-fkey="${fc.key}"><td class="t">${AL.fmt.esc(fc.name)}</td><td class="r ${AL.fmt.cls(fc.avgIC)}">${fc.avgIC.toFixed(3)}</td><td class="r">${fc.avgOOS.toFixed(3)}</td><td class="r">${AL.fmt.pct(fc.consistency, 0)}</td><td class="r">${fc.maxCorr != null ? AL.fmt.pct(fc.maxCorr, 0) : '-'}</td><td class="r">${fc.added.slice(5, 10)}</td></tr>`).join('') || '<tr><td colspan="6"><div class="empty">Library empty.</div></td></tr>') + '</tbody></table></div>', { nopad: true })}
       </div>
       <div style="display:flex;flex-direction:column;gap:12px;min-width:0">
         ${UI.panel('Factor inspector', '<div id="af-inspect"><div class="empty">Click a factor to inspect IC decay & per-asset ICs.</div></div>')}
@@ -411,7 +411,7 @@ UI.def('mllab', 'ML Lab', 'Ψ', 'Autonomous Research', function (el, state, tab)
       <label class="lbl">horizon</label><select class="inp" id="ml-h">${[5, 10, 21].map(h => `<option ${h === horizon ? 'selected' : ''}>${h}</option>`).join('')}</select>
       <button class="btn primary" id="ml-run">Train walk-forward</button>
       <span class="note" id="ml-status"></span></div>
-    <div class="info-box" style="margin-bottom:12px">Models train entirely in-browser on 14–15 engineered features (momentum stack, reversal, vol & vol-of-vol, RSI, trend distance, drawdown state, VIX level & z-score, yield curve, seasonality) with expanding-window walk-forward refits every quarter — predictions are always out-of-sample. Deep-learning references (LSTM/Transformer/TCN/GNN) are honestly represented here by the MLP baseline: on daily bars with a few thousand observations, properly validated shallow models are the institutional norm.</div>
+    <div class="info-box" style="margin-bottom:12px">Models train entirely in-browser on 14–15 engineered features (momentum stack, reversal, vol & vol-of-vol, RSI, trend distance, drawdown state, VIX level & z-score, yield curve, seasonality) with expanding-window walk-forward refits every quarter, predictions are always out-of-sample. Deep-learning references (LSTM/Transformer/TCN/GNN) are honestly represented here by the MLP baseline: on daily bars with a few thousand observations, properly validated shallow models are the institutional norm.</div>
     <div id="ml-body"><div class="empty">Configure and train.</div></div>`;
   const run = () => {
     document.getElementById('ml-status').textContent = 'training (walk-forward)…';

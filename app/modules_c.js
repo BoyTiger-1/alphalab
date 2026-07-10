@@ -88,7 +88,7 @@ UI.def('portfolio', 'Portfolio Builder', '◔', 'Portfolio & Risk', function (el
         ${UI.panel('Risk contribution', '<div class="chart" style="height:230px" id="pf-rc"></div>')}
         ${UI.panel('Efficient frontier (annualized, 5y window)', '<div class="chart" style="height:230px" id="pf-ef"></div>')}
       </div>
-      ${UI.panel('Backtest — optimized weights, 10y, monthly rebalance' + (vt ? ` + ${(vt * 100)}% vol targeting` : ''), '<div class="chart h280" id="pf-eq" style="height:280px"></div>', { nopad: true })}
+      ${UI.panel('Backtest, optimized weights, 10y, monthly rebalance' + (vt ? ` + ${(vt * 100)}% vol targeting` : ''), '<div class="chart h280" id="pf-eq" style="height:280px"></div>', { nopad: true })}
       <div style="margin-top:12px">${UI.panel('Portfolio statistics (10y)', UI.metricsFor(stats, { 'Est. Vol (ex-ante)': f.pct(pvol) }))}</div>`;
     C.bars(document.getElementById('pf-w'), syms.map((s, i) => ({ label: s, value: w[i] })), { horizontal: true, pct: true, sorted: true });
     C.bars(document.getElementById('pf-rc'), syms.map((s, i) => ({ label: s, value: rc[i] })), { horizontal: true, pct: true, sorted: true });
@@ -112,7 +112,16 @@ UI.DEMO_BOOK = [
   { sym: 'GLD', qty: 25, costBasis: 210 }, { sym: 'BTC-USD', qty: 0.15, costBasis: 45000 },
 ];
 UI.def('holdings', 'My Holdings', '❖', 'Portfolio & Risk', function (el, state, tab) {
+  // wharton competition setup: wipe the demo book and start from $100K virtual cash
+  if (state.wharton) {
+    state.wharton = false;
+    if (confirm('Set up Wharton competition mode? This clears current holdings and starts you with $100,000 virtual cash.')) {
+      AL.store.set('holdings', []);
+      AL.store.set('cash', 100000);
+    }
+  }
   const pf = AL.store.get('holdings', UI.DEMO_BOOK);
+  const cash = AL.store.get('cash', null);   // null = plain tracking, number = competition cash accounting
   const f = AL.fmt;
   const rows = pf.map(h => {
     const ser = AL.getSeries(h.sym);
@@ -123,13 +132,21 @@ UI.def('holdings', 'My Holdings', '❖', 'Portfolio & Risk', function (el, state
   }).filter(Boolean);
   const totMV = Q.sum(rows.map(r => r.mv));
   const totPnl = Q.sum(rows.map(r => r.pnl));
+  const totBook = totMV + (cash || 0);
   el.innerHTML = `
     <div class="section-title">Personal Portfolio Monitor
       <span class="badge dim">valued at real ${AL.asof} closes</span>
+      ${cash != null ? '<span class="badge info">WHARTON MODE</span>' : ''}
       <span style="flex:1"></span>
+      <button class="btn" id="h-wharton">Wharton mode ($100K)</button>
+      <button class="btn" id="h-import">Import CSV</button>
       <button class="btn" id="h-add">+ Add position</button>
-      <button class="btn primary" id="h-review">🜂 AI portfolio review</button></div>
+      <button class="btn" id="h-report">Strategy report</button>
+      <button class="btn primary" id="h-review">AI portfolio review</button>
+      <input type="file" id="h-file" accept=".csv,text/csv" style="display:none"></div>
     <div class="tiles" style="margin-bottom:12px">
+      ${cash != null ? `<div class="tile"><div class="t-label">Total book</div><div class="t-value">${f.usd(totBook)}</div><div class="t-delta note">invested + cash</div></div>
+      <div class="tile"><div class="t-label">Cash</div><div class="t-value ${cash < 0 ? 'dn' : ''}">${f.usd(cash)}</div><div class="t-delta note">${f.pct(cash / (totBook || 1), 1)} of book</div></div>` : ''}
       <div class="tile"><div class="t-label">Market value</div><div class="t-value">${f.usd(totMV)}</div></div>
       <div class="tile"><div class="t-label">Unrealized P&L</div><div class="t-value ${f.cls(totPnl)}">${f.usd(totPnl)}</div><div class="t-delta ${f.cls(totPnl)}">${f.spct(totPnl / (totMV - totPnl))}</div></div>
       <div class="tile"><div class="t-label">Positions</div><div class="t-value">${rows.length}</div></div>
@@ -142,7 +159,7 @@ UI.def('holdings', 'My Holdings', '❖', 'Portfolio & Risk', function (el, state
           rows.map((r, i) => `<tr><td class="sym">${r.sym}</td><td class="t">${f.esc(r.name.slice(0, 22))}</td><td class="r">${r.qty}</td><td class="r">${f.px(r.costBasis)}</td><td class="r">${f.px(r.last)}</td>
             <td class="r">${f.usd(r.mv)}</td><td class="r ${f.cls(r.pnl)}">${f.usd(r.pnl)}</td><td class="r ${f.cls(r.pnlPct)}">${f.spct(r.pnlPct)}</td><td class="r">${f.pct(r.mv / totMV, 1)}</td>
             <td class="r"><span class="x" data-del="${i}" style="cursor:pointer;color:var(--muted)">✕</span></td></tr>`).join('') + '</tbody></table>', { nopad: true })}
-        ${UI.panel('Portfolio vs benchmarks — 2y, indexed', '<div class="chart h260" id="h-eq"></div>', { nopad: true })}
+        ${UI.panel('Portfolio vs benchmarks, 2y, indexed', '<div class="chart h260" id="h-eq"></div>', { nopad: true })}
       </div>
       <div style="display:flex;flex-direction:column;gap:12px;min-width:0">
         ${UI.panel('Exposure breakdown', '<div class="chart" style="height:170px" id="h-exp"></div>')}
@@ -189,9 +206,51 @@ UI.def('holdings', 'My Holdings', '❖', 'Portfolio & Risk', function (el, state
     const qty = parseFloat(prompt('Quantity:')); const cb = parseFloat(prompt('Cost basis per unit:'));
     if (!isFinite(qty) || !isFinite(cb)) return;
     pf.push({ sym: sym.toUpperCase(), qty, costBasis: cb });
+    if (cash != null) AL.store.set('cash', cash - qty * cb);   // buying spends the virtual cash
     AL.store.set('holdings', pf); UI.renderActive();
   });
-  el.querySelectorAll('[data-del]').forEach(x => x.addEventListener('click', () => { pf.splice(+x.dataset.del, 1); AL.store.set('holdings', pf); UI.renderActive(); }));
+  el.querySelectorAll('[data-del]').forEach(x => x.addEventListener('click', () => {
+    const sold = pf[+x.dataset.del];
+    // selling returns proceeds at the latest real close in competition mode
+    if (cash != null && sold) {
+      const ser = AL.getSeries(sold.sym);
+      if (ser) AL.store.set('cash', AL.store.get('cash', 0) + sold.qty * ser.values[ser.values.length - 1]);
+    }
+    pf.splice(+x.dataset.del, 1); AL.store.set('holdings', pf); UI.renderActive();
+  }));
+  document.getElementById('h-wharton').addEventListener('click', () => { state.wharton = true; UI.renderActive(); });
+  // bulk import: csv rows of symbol,quantity,cost_basis (header optional)
+  document.getElementById('h-import').addEventListener('click', () => document.getElementById('h-file').click());
+  document.getElementById('h-file').addEventListener('change', e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const rd = new FileReader();
+    rd.onload = () => {
+      let added = 0, skipped = [];
+      for (const line of rd.result.replace(/\r/g, '').split('\n')) {
+        const parts = line.split(',').map(x => x.trim());
+        if (parts.length < 2 || /sym|ticker/i.test(parts[0])) continue;
+        const sym = parts[0].toUpperCase();
+        const qty = parseFloat(parts[1]);
+        const ser = AL.getSeries(sym);
+        const cb = parseFloat(parts[2]) || (ser ? ser.values[ser.values.length - 1] : NaN);
+        if (ser && isFinite(qty) && isFinite(cb)) { pf.push({ sym, qty, costBasis: cb }); added++; }
+        else if (parts[0]) skipped.push(parts[0]);
+      }
+      AL.store.set('holdings', pf);
+      alert(`Imported ${added} positions.` + (skipped.length ? ` Skipped (unknown/invalid): ${skipped.slice(0, 8).join(', ')}` : ''));
+      UI.renderActive();
+    };
+    rd.readAsText(file);
+  });
+  // wharton-style written strategy report for the whole book
+  document.getElementById('h-report').addEventListener('click', () => {
+    if (!rows.length) return alert('Add positions first.');
+    const rep = UI.buildPortfolioReport(rows, totMV, cash, prets, dts, mktBeta);
+    const reports = AL.store.get('reports', []);
+    reports.push(rep); AL.store.set('reports', reports);
+    UI.openTab('reportView', { idx: reports.length - 1, forceNew: true }, 'Strategy Report');
+  });
   // AI review
   document.getElementById('h-review').addEventListener('click', () => {
     const box = document.getElementById('h-ai');
@@ -205,13 +264,13 @@ UI.def('holdings', 'My Holdings', '❖', 'Portfolio & Risk', function (el, state
     if (mktBeta > 1.15) recs.push({ t: 'REDUCE BETA', s: 'warn', m: `Portfolio beta ${f.n(mktBeta)} > 1.1 while the detected regime is “${regime.label}”. Historically (2000→now), beta>1.1 books in comparable regimes saw ${regime.tone === 'bad' ? 'materially deeper' : 'similar'} drawdowns than the index. Consider shifting ${f.pct(Math.min((mktBeta - 1) * 0.5, 0.2), 0)} into TLT/USMV to normalize.` });
     else if (mktBeta < 0.6) recs.push({ t: 'BETA CHECK', s: 'info', m: `Portfolio beta is a defensive ${f.n(mktBeta)}. If that is intentional, fine; in trending bull regimes this historically forgoes ~${f.pct((1 - mktBeta) * 0.07, 1)}/yr of expected equity premium.` });
     if (regime.curve != null && regime.curve < 0) recs.push({ t: 'MACRO', s: 'warn', m: `The 10Y−2Y curve is inverted (${f.n(regime.curve, 2)}%). Every US recession since 1976 followed an inversion; median equity drawdown in the following 18 months was ~−20%. A 5–10% sleeve of long duration (TLT) or gold has historically hedged this transition.` });
-    if (losers.length) recs.push({ t: 'TAX-LOSS HARVEST', s: 'info', m: `${losers.map(l => `${l.sym} (${f.spct(l.pnlPct)})`).join(', ')} trade below cost basis. Harvesting and rotating into a correlated-but-not-identical exposure (e.g. ${losers[0].cls === 'ETF' ? 'a different index fund' : 'sector ETF'}) realizes the loss while keeping the exposure — verify wash-sale rules with your advisor.` });
+    if (losers.length) recs.push({ t: 'TAX-LOSS HARVEST', s: 'info', m: `${losers.map(l => `${l.sym} (${f.spct(l.pnlPct)})`).join(', ')} trade below cost basis. Harvesting and rotating into a correlated-but-not-identical exposure (e.g. ${losers[0].cls === 'ETF' ? 'a different index fund' : 'sector ETF'}) realizes the loss while keeping the exposure, verify wash-sale rules with your advisor.` });
     if (!rows.some(r => ['TLT', 'IEF', 'SHY', 'TIP', 'LQD'].includes(r.sym)) && byCls['ETF'] !== 1) recs.push({ t: 'DIVERSIFY', s: 'info', m: `No fixed-income sleeve detected. Over 2000→now, adding 20% intermediate Treasuries to an all-risk book improved Sharpe from ~${f.n(p ? p.sharpe : 0.5)} to an estimated ${f.n((p ? p.sharpe : 0.5) * 1.15)} (bootstrap 90% CI: +0.05 to +0.25).` });
     recs.push({ t: 'REBALANCE', s: 'ok', m: `Current drift vs equal-risk allocation is ${f.pct(Math.max(...rows.map((r, i) => Math.abs(r.mv / totMV - 1 / rows.length))), 0)} at the extreme. Quarterly rebalancing on this book (backtested on your actual weights) historically added ~0.2–0.4%/yr versus buy-and-hold, mostly in high-vol regimes.` });
     box.innerHTML = `
       <div class="note" style="margin-bottom:8px">Regime: <b>${regime.label}</b> · portfolio 2y Sharpe ${f.n(p ? p.sharpe : NaN)} · IR vs SPY ${f.n(p ? p.ir : NaN)} · HHI ${f.n(hhi, 3)}</div>
       ${recs.map(r => `<div style="margin-bottom:8px"><span class="badge ${r.s}">${r.t}</span><div class="note" style="margin-top:3px">${r.m}</div></div>`).join('')}
-      <div class="warn-box" style="margin-top:6px">These are research insights derived from real historical data — statistical estimates with uncertainty, not individualized investment advice. AlphaLab never executes trades; decisions remain yours.</div>`;
+      <div class="warn-box" style="margin-top:6px">These are research insights derived from real historical data, statistical estimates with uncertainty, not individualized investment advice. AlphaLab never executes trades; decisions remain yours.</div>`;
   });
 });
 
@@ -221,7 +280,7 @@ UI.def('holdings', 'My Holdings', '❖', 'Portfolio & Risk', function (el, state
 UI.def('risk', 'Risk Lab', '☈', 'Portfolio & Risk', function (el, state, tab) {
   const SCEN = {
     2008: { name: 'Global Financial Crisis', from: '2007-10-01', to: '2009-03-09', note: 'Peak-to-trough of the GFC: Lehman, credit freeze, −57% S&P drawdown.' },
-    COVID: { name: 'COVID-19 Crash', from: '2020-02-19', to: '2020-03-23', note: 'Fastest 30% drawdown in history — 23 trading days.' },
+    COVID: { name: 'COVID-19 Crash', from: '2020-02-19', to: '2020-03-23', note: 'Fastest 30% drawdown in history, 23 trading days.' },
     2022: { name: '2022 Rate-Hike Cycle', from: '2022-01-03', to: '2022-10-12', note: 'Simultaneous equity and bond bear market; 60/40 worst year since 1937.' },
     DOTCOM: { name: 'Dot-Com Unwind', from: '2000-03-24', to: '2002-10-09', note: 'S&P −49%, Nasdaq −78% over 2.5 years.' },
     1987: { name: 'Black Monday 1987', from: '1987-08-25', to: '1987-12-04', note: '−20.5% in a single session (Oct 19). Index-level replay via S&P 500 history.' },
@@ -232,11 +291,11 @@ UI.def('risk', 'Risk Lab', '☈', 'Portfolio & Risk', function (el, state, tab) 
     <div class="section-title">Institutional Risk Laboratory</div>
     <div class="controls">${Object.entries(SCEN).map(([k, v]) => `<span class="chip ${k === scen ? 'on' : ''}" data-sc="${k}">${v.name}</span>`).join('')}</div>
     <div class="grid g2" style="margin-bottom:12px">
-      ${UI.panel(`Crisis replay — <span id="rk-title"></span> <span class="badge dim">real historical window</span>`, '<div class="note" id="rk-note" style="margin-bottom:8px"></div><div class="chart h260" id="rk-replay"></div>')}
+      ${UI.panel(`Crisis replay, <span id="rk-title"></span> <span class="badge dim">real historical window</span>`, '<div class="note" id="rk-note" style="margin-bottom:8px"></div><div class="chart h260" id="rk-replay"></div>')}
       ${UI.panel('Your portfolio through this crisis', '<div id="rk-port"></div>')}
     </div>
     <div class="grid g2" style="margin-bottom:12px">
-      ${UI.panel('Monte Carlo — 1y forward, block bootstrap of real history <span class="badge dim">2,000 paths</span>', '<div class="chart h280" id="rk-mc"></div><div class="note" id="rk-mc-note" style="margin-top:6px"></div>')}
+      ${UI.panel('Monte Carlo, 1y forward, block bootstrap of real history <span class="badge dim">2,000 paths</span>', '<div class="chart h280" id="rk-mc"></div><div class="note" id="rk-mc-note" style="margin-top:6px"></div>')}
       ${UI.panel('Value-at-Risk ladder (current book)', '<div id="rk-var"></div>')}
     </div>
     <div class="grid g2">
@@ -317,7 +376,7 @@ UI.def('risk', 'Risk Lab', '☈', 'Portfolio & Risk', function (el, state, tab) 
       ${UI.metric('Projected trough', f.spct(projTrough), 'dn')}
       ${UI.metric('$ impact', f.usd(projLoss * totMV), f.cls(projLoss))}
       ${UI.metric('Coverage (actual data)', f.pct(havePct, 0))}
-    </div>` : '<div class="empty">No holdings — add positions in My Holdings.</div>';
+    </div>` : '<div class="empty">No holdings, add positions in My Holdings.</div>';
   // --- Monte Carlo on the actual book
   const al2 = rowsMV.length ? AL.align(rowsMV.map(r => r.sym), 'ret') : null;
   let prets = AL.returns('SPY').values.slice(-1260);
@@ -334,7 +393,7 @@ UI.def('risk', 'Risk Lab', '☈', 'Portfolio & Risk', function (el, state, tab) 
   const p1 = Q.perf(prets);
   const mvBase = pf.length ? totMV : 1e6;
   document.getElementById('rk-var').innerHTML = `
-    <div class="note" style="margin-bottom:6px">Historical method on ${prets.length} days of real portfolio returns${pf.length ? '' : ' (SPY proxy — no holdings entered)'} · book ${f.usd(mvBase)}</div>
+    <div class="note" style="margin-bottom:6px">Historical method on ${prets.length} days of real portfolio returns${pf.length ? '' : ' (SPY proxy, no holdings entered)'} · book ${f.usd(mvBase)}</div>
     ${[['1-day VaR 95%', p1.var95, 1], ['1-day VaR 99%', p1.var99, 1], ['1-day CVaR 95% (expected shortfall)', p1.cvar95, 1],
       ['10-day VaR 95% (√t)', p1.var95 * Math.sqrt(10), 1], ['21-day VaR 99% (√t)', p1.var99 * Math.sqrt(21), 1]].map(([lbl, v]) =>
       `<div class="kv"><span class="k">${lbl}</span><span class="v dn">${f.spct(v)} · ${f.usd(v * mvBase)}</span></div>`).join('')}
@@ -385,7 +444,7 @@ UI.def('risk', 'Risk Lab', '☈', 'Portfolio & Risk', function (el, state, tab) 
     document.getElementById('sc-out').innerHTML = `
       <div class="metrics" style="margin-bottom:8px">${UI.metric('Portfolio impact', f.spct(tot), f.cls(tot))}${UI.metric('$ impact', f.usd(tot * mvBase), f.cls(tot))}</div>
       <table class="tbl"><tbody>${parts.sort((a, b) => a.impact - b.impact).map(p2 => `<tr><td class="sym">${p2.sym}</td><td class="r">${f.pct(p2.w, 1)}</td><td class="r ${f.cls(p2.impact)}">${f.spct(p2.impact)}</td></tr>`).join('')}</tbody></table>
-      <div class="note" style="margin-top:6px">VIX multiplier affects confidence bands, not point estimates; betas are historical and unstable in crises — treat as first-order estimates.</div>`;
+      <div class="note" style="margin-top:6px">VIX multiplier affects confidence bands, not point estimates; betas are historical and unstable in crises, treat as first-order estimates.</div>`;
   });
 });
 
@@ -399,7 +458,7 @@ UI.def('reports', 'Reports', '≣', 'Knowledge', function (el, state) {
     <div class="info-box" style="margin-bottom:12px">Every strategy module can generate a hedge-fund-quality research report (methodology, data, results, validation gauntlet, limitations, conclusion). Open a report and use <b>Print / Save as PDF</b> for institutional distribution.</div>
     ${reports.length ? `<div class="panel"><div class="panel-body nopad"><table class="tbl"><thead><tr><th>#</th><th>Title</th><th class="r">Verdict</th><th class="r">Date</th></tr></thead><tbody>` +
       reports.map((r, i) => `<tr data-i="${i}"><td>${i + 1}</td><td class="t" style="font-weight:600">${AL.fmt.esc(r.title)}</td><td class="r"><span class="badge ${r.verdict}">${r.verdict}</span></td><td class="r">${r.date}</td></tr>`).reverse().join('') +
-      '</tbody></table></div></div>' : '<div class="empty">No reports yet — open any strategy and press “Generate research report”.</div>'}`;
+      '</tbody></table></div></div>' : '<div class="empty">No reports yet, open any strategy and press “Generate research report”.</div>'}`;
   el.querySelectorAll('tr[data-i]').forEach(r => r.addEventListener('click', () => UI.openTab('reportView', { idx: +r.dataset.i, forceNew: true }, 'Report #' + (+r.dataset.i + 1))));
 });
 
@@ -413,7 +472,7 @@ UI.def('reportView', 'Report', '¶', 'Knowledge', function (el, state, tab) {
       ${rep.entryId && S.byId[rep.entryId] ? `<button class="btn" onclick="UI.openTab('stratDetail',{sid:'${rep.entryId}',forceNew:true},'module')">Open live module (full reproducibility)</button>` : ''}</div>
     <div class="report">
       <h1>${AL.fmt.esc(rep.title)}</h1>
-      <div class="r-meta">ALPHALAB AUTONOMOUS RESEARCH · ${rep.date} · VERDICT: ${rep.verdict} · data: Yahoo Finance / FRED / Coinbase (real history) · reproducible from module ${rep.entryId || '—'}</div>
+      <div class="r-meta">ALPHALAB AUTONOMOUS RESEARCH · ${rep.date} · VERDICT: ${rep.verdict} · data: Yahoo Finance / FRED / Coinbase (real history) · reproducible from module ${rep.entryId || '-'}</div>
       <div class="r-chart no-print" id="rep-chart"></div>
       ${rep.sections.map(s => `<h2>${AL.fmt.esc(s.h)}</h2><p>${AL.fmt.esc(s.body)}</p>`).join('')}
       <h2>Disclosure</h2><p>Generated by AlphaLab's autonomous research engine from real historical market data. All statistics are estimates subject to sampling error; past performance does not guarantee future results. This document is research, not an offer or personalized investment advice.</p>
@@ -452,10 +511,10 @@ UI.def('knowledge', 'Knowledge Base', '⌘', 'Knowledge', function (el, state) {
       <div class="tile"><div class="t-label">Factors in library</div><div class="t-value">${lib.length}</div></div>
     </div>
     <div class="grid g2">
-      ${UI.panel('Institutional memory — findings & dead ends <input class="inp no-print" id="kb-q" placeholder="search…" style="margin-left:8px" value="' + AL.fmt.esc(q) + '">',
-        `<div class="feed" style="max-height:calc(100vh - 320px);overflow:auto">${notes.map(n => `<div class="fl"><span class="ft">${n.ts.slice(5, 16)}</span><span class="fm ${n.note.startsWith('Validated') ? 'good' : 'bad'}">${AL.fmt.esc(n.note)}</span></div>`).join('') || '<div class="empty">Empty — run the researcher to build institutional memory.</div>'}</div>`)}
+      ${UI.panel('Institutional memory, findings & dead ends <input class="inp no-print" id="kb-q" placeholder="search…" style="margin-left:8px" value="' + AL.fmt.esc(q) + '">',
+        `<div class="feed" style="max-height:calc(100vh - 320px);overflow:auto">${notes.map(n => `<div class="fl"><span class="ft">${n.ts.slice(5, 16)}</span><span class="fm ${n.note.startsWith('Validated') ? 'good' : 'bad'}">${AL.fmt.esc(n.note)}</span></div>`).join('') || '<div class="empty">Empty, run the researcher to build institutional memory.</div>'}</div>`)}
       <div style="display:flex;flex-direction:column;gap:12px">
-        ${UI.panel('Why this matters', `<div class="note" style="line-height:1.7">Every hypothesis — validated or failed — is written to persistent storage with its verdict, metrics and the market regime at test time. The hypothesis generator consults this memory and <b>never re-tests a specification that already failed</b>, so research compounds instead of looping. Verdict keys stored: ${tried}. Clearing browser storage resets the platform's memory.</div>
+        ${UI.panel('Why this matters', `<div class="note" style="line-height:1.7">Every hypothesis, validated or failed, is written to persistent storage with its verdict, metrics and the market regime at test time. The hypothesis generator consults this memory and <b>never re-tests a specification that already failed</b>, so research compounds instead of looping. Verdict keys stored: ${tried}. Clearing browser storage resets the platform's memory.</div>
         <button class="btn danger small" id="kb-clear" style="margin-top:8px">Wipe knowledge base</button>`)}
         ${UI.panel('Verdicts by regime at test time', '<div id="kb-reg"></div>')}
       </div>
@@ -477,3 +536,50 @@ UI.def('knowledge', 'Knowledge Base', '⌘', 'Knowledge', function (el, state) {
     }
   });
 });
+
+// wharton-style written strategy report for the current book. sections are plain strings
+// so the report view can escape + print them like every other research report.
+UI.buildPortfolioReport = function (rows, totMV, cash, prets, dts, mktBeta) {
+  const f = AL.fmt;
+  const p2y = Q.perf(prets.slice(-504));
+  // benchmark stats over the same window for the comparison section
+  const spy = AL.returns('SPY').values.slice(-504);
+  const bstats = Q.perf(spy);
+  // advisor scores give each equity holding a written rationale; non-equities get a role line
+  let scored = null;
+  try { scored = UI.scoreStocks(); } catch (e) { /* advisor module unavailable */ }
+  const regime = Q.marketRegime();
+  const lines = rows.map(r => {
+    const w = r.mv / totMV;
+    const sr = scored ? scored.rows.find(x => x.sym === r.sym) : null;
+    if (sr) return `${r.sym} (${f.pct(w, 1)}): ${UI.stockThesis(sr, regime)}`;
+    const role = r.cls === 'ETF' ? 'broad diversified exposure' : r.cls === 'Crypto' ? 'small high-risk growth sleeve' : r.cls === 'Futures' ? 'commodity diversifier' : 'portfolio holding';
+    const vol = Q.std(AL.returns(r.sym).values.slice(-252)) * Math.sqrt(252);
+    return `${r.sym} (${f.pct(w, 1)}): ${role}, ${f.pct(vol, 0)} annualized volatility over the last year.`;
+  });
+  const hhi = Q.sum(rows.map(r => (r.mv / totMV) ** 2));
+  const maxW = Math.max(...rows.map(r => r.mv / totMV));
+  const crisis = mktBeta * -0.55;   // beta-mapped 2008 trough as a first-order worst case
+  const secs = [];
+  secs.push(['Portfolio overview',
+    `Book value ${f.usd(totMV + (cash || 0))}${cash != null ? ` (${f.usd(totMV)} invested, ${f.usd(cash)} cash)` : ''} across ${rows.length} positions, valued at real ${AL.asof} closing prices. ` +
+    `Portfolio beta to the S&P 500 is ${f.n(mktBeta)} (1-year daily regression). Concentration (HHI) is ${f.n(hhi, 3)}; the largest single position is ${f.pct(maxW, 1)} of invested capital. Market regime at writing: ${regime.label}.`]);
+  secs.push(['Investment objective and strategy',
+    `The portfolio seeks long-term capital appreciation with measured risk, combining core index exposure, selected single names ranked by a seven-factor model (momentum, trend, risk-adjusted return, volatility, consistency, regime fit, and a sentiment composite from real news, social, and attention data), and diversifying assets. ` +
+    `Position sizes are kept below roughly 15-20% of the book so that no single holding dominates outcomes, and the mix is reviewed when the detected market regime changes.`]);
+  secs.push(['Holdings rationale', lines.join('\n')]);
+  secs.push(['Risk analysis', [
+    `Realized statistics on this exact book over the last two years of real data: annualized volatility ${f.pct(p2y ? p2y.vol : NaN, 1)}, maximum drawdown ${f.pct(p2y ? p2y.maxDD : NaN, 1)}, 1-day 95% VaR ${f.pct(p2y ? p2y.var95 : NaN)}, 1-day 95% CVaR ${f.pct(p2y ? p2y.cvar95 : NaN)}.`,
+    `Crisis stress: mapping current holdings onto the 2008 financial crisis through their market betas implies an estimated trough of about ${f.pct(crisis, 0)} for this book. The Risk Lab module contains the full replay (2008, COVID, 2022, dot-com, 1987) plus a 2,000-path Monte Carlo.`,
+    `Key risks: equity market drawdowns, concentration in the largest holdings, and regime shifts from the current "${regime.label}" state. Mitigations: position caps, diversifying sleeves, and scheduled rebalancing.`,
+  ].join('\n')]);
+  secs.push(['Benchmark comparison',
+    `Over the same two-year window the portfolio earned a Sharpe ratio of ${f.n(p2y ? p2y.sharpe : NaN)} versus ${f.n(bstats ? bstats.sharpe : NaN)} for the S&P 500 (SPY). Portfolio CAGR ${f.pct(p2y ? p2y.cagr : NaN, 1)} versus SPY ${f.pct(bstats ? bstats.cagr : NaN, 1)}. Tracking is monitored in the My Holdings module against SPY and a 60/40 blend.`]);
+  secs.push(['Monitoring and rebalancing plan',
+    `Weekly: re-run the Stock Advisor scoring and the AI portfolio review; investigate any holding whose composite score drops below the universe median. ` +
+    `Monthly: rebalance positions that drifted more than 5 percentage points from target, harvest losses where a position sits meaningfully below cost basis, and re-check concentration (HHI) and beta. ` +
+    `On regime change (calm to stressed or the reverse): re-evaluate beta and consider shifting weight between aggressive and defensive names as the regime-fit factor indicates.`]);
+  secs.push(['Methodology and data',
+    `All prices are real adjusted daily closes (Yahoo Finance), macro series from FRED, crypto from Coinbase, news tone from GDELT, investor sentiment from StockTwits, and attention from Wikipedia pageviews. Statistics are computed on this data with no simulation. Estimates carry sampling error; past performance does not guarantee future results.`]);
+  return { title: 'Investment Strategy Report', entryId: null, date: new Date().toISOString().slice(0, 10), sections: secs.map(([h, body]) => ({ h, body })), verdict: 'PORTFOLIO' };
+};
