@@ -46,6 +46,8 @@ UI.mergedUniverse = function () {
 };
 
 UI.scoreStocks = function (opts = {}) {
+  // scoring the full universe is ~1-2s; cache it for the session since data is static
+  if (UI._scoreCache && !opts.fresh) return UI._scoreCache;
   const uni = UI.mergedUniverse();
   const regime = Q.marketRegime();
   const rows = [];
@@ -127,15 +129,26 @@ UI.scoreStocks = function (opts = {}) {
     r.z_sent = parts.length ? Q.mean(parts) : 0;
     r.hasSent = parts.length > 0;
   });
-  // weighted composite; weights sum to 1
-  const W = { z_mom: 0.17, z_trend: 0.13, z_sharpe: 0.14, z_vol: 0.10, z_consistency: 0.09, z_secRel: 0.11, z_regime: 0.11, z_sent: 0.15 };
+  // fundamental pillars folded in when real fundamentals are bundled for the name
+  rows.forEach(r => {
+    const fs = UI.fundamentalScore ? UI.fundamentalScore(r.sym) : null;
+    r.z_value = fs && fs.pillars.value != null ? fs.pillars.value : 0;
+    r.z_quality = fs && fs.pillars.quality != null ? fs.pillars.quality : 0;
+    r.z_growth = fs && fs.pillars.growth != null ? fs.pillars.growth : 0;
+    r.z_analyst = fs && fs.pillars.analyst != null ? fs.pillars.analyst : 0;
+    r.hasFund = !!fs;
+  });
+  // weighted composite; technical factors plus fundamental pillars, weights sum to 1
+  const W = { z_mom: 0.13, z_trend: 0.10, z_sharpe: 0.10, z_vol: 0.08, z_consistency: 0.06, z_secRel: 0.08, z_regime: 0.08, z_sent: 0.11,
+    z_analyst: 0.09, z_quality: 0.06, z_growth: 0.06, z_value: 0.05 };
   rows.forEach(r => {
     r.score = Object.entries(W).reduce((s2, [k, w]) => s2 + w * (r[k] || 0), 0);
-    // confidence: probabilistic sharpe on the last year of returns, discounted without sentiment feeds
-    r.conf = Q.psr(r.rets.slice(-52)) * (r.hasSent ? 1 : 0.92);
+    // confidence: probabilistic sharpe on the last year, boosted by fundamental+sentiment coverage
+    r.conf = Q.psr(r.rets.slice(-52)) * (r.hasSent ? 1 : 0.94) * (r.hasFund ? 1 : 0.9);
   });
   rows.sort((a, b) => b.score - a.score);
-  return { rows, regime, weights: W, universe: rows.length };
+  UI._scoreCache = { rows, regime, weights: W, universe: rows.length, bySym: Object.fromEntries(rows.map(r => [r.sym, r])) };
+  return UI._scoreCache;
 };
 
 // plain-english reasoning for one scored stock, built from its strongest and weakest factors
@@ -403,12 +416,15 @@ UI.def('guide', 'How To Use This', '?', 'Start Here', function (el, state) {
     <div class="grid g2">
     <div>
     ${g('What is AlphaLab, in one paragraph', `AlphaLab is a research terminal for stocks and other markets. It holds 26 years of real price history plus real news, social, and attention data, and it lets you test ideas against that history before you risk money on them. Think of it as a flight simulator for investing: you can try a strategy, crash it safely, and read exactly why it crashed. It never touches real money and never places trades.`)}
-    ${g('Never invested before? Do these five things', `
-      <b>1. Look at a stock.</b> Press Ctrl+K, type a ticker like AMZN, hit Enter. The chart shows its real price history. The red "drawdown" chart below shows every painful drop it has ever had. That is what owning it feels like.<br><br>
-      <b>2. Get recommendations.</b> Open <b>Stock Advisor</b> in the left menu. It ranks every stock using seven factors (explained below) and hands you a suggested starter basket with weights. Click any stock to read the reasoning in plain English.<br><br>
-      <b>3. Build your portfolio.</b> Open <b>My Holdings</b>, press Competition mode to start with $100,000 of virtual cash, and add positions. The Advisor's "Add to My Holdings" button does this for you and deducts the cash.<br><br>
-      <b>4. Stress test it.</b> Open <b>Risk Lab</b>. It replays your exact portfolio through the 2008 crisis, the COVID crash, and Black Monday 1987 using real data, and shows the dollar loss you would have taken. If that number scares you, diversify more.<br><br>
-      <b>5. Get the report.</b> In My Holdings, press "Strategy report". You get a written investment strategy document (great for competition submissions) that explains your allocation, risks, and reasoning.`)}
+    ${g('Take the interactive tour first', `New here? The guided tour drives the real app for you, one screen at a time, pointing at exactly what matters. It is the fastest way to learn AlphaLab. <button class="btn primary small" onclick="UI.startTour()" style="margin-top:8px">Start the interactive tour</button>`)}
+    ${g('Never invested before? Do these six things', `
+      <b>1. Judge one stock.</b> Open <b>Buy / Sell Decision</b>, type a ticker like AMZN, and read the call. It fuses price action, real fundamentals (P/E, growth, margins), Wall Street analyst targets, earnings, news, and investor posts into a single BUY, HOLD, or SELL with a bull case and a bear case. This is the fastest "should I buy this?" answer on the site.<br><br>
+      <b>2. Look at its history.</b> Press Ctrl+K, type the ticker, hit Enter. The chart shows real price history and the red drawdown chart shows every painful drop it has had. That is what owning it feels like.<br><br>
+      <b>3. Get recommendations.</b> Open <b>Stock Advisor</b>. It ranks every listed US stock on eight factors and hands you a diversified starter basket. Or use the <b>Screener</b> to filter by value, growth, quality, or dividends.<br><br>
+      <b>4. Build your portfolio.</b> Open <b>My Holdings</b>, press Competition mode for $100,000 of virtual cash, and add positions. The Advisor and Decision engine can add them for you and deduct the cash.<br><br>
+      <b>5. Stress test it.</b> Open <b>Risk Lab</b>. It replays your exact portfolio through 2008, COVID, and Black Monday using real data and shows the dollar loss you would have taken. If that number scares you, diversify more.<br><br>
+      <b>6. Get the report.</b> In My Holdings, press "Strategy report" for a written investment strategy document, ideal for competition submissions.`)}
+    ${g('The Buy / Sell Decision engine, explained', `This is the deepest single-stock view on the site. For any ticker it pulls together, all on real data: the eight technical factors, real fundamentals from Yahoo Finance (valuation multiples, revenue and earnings growth, profit margins, return on equity, debt, dividend yield), Wall Street analyst price targets and the full strong-buy-to-strong-sell split, the last four quarters of earnings surprises, real news headlines from GDELT, and real investor posts from StockTwits. It weighs technical 28%, analyst 20%, quality/growth/value 14% each, and sentiment 10%, then prints a BUY, HOLD, or SELL with the specific reasons for and against. Every reason is a real number you can cite, and it always tells you what would change the call.`)}
     ${g('Playbook: Wharton Global Investment Competition', `
       The competition gives your team about $100,000 of virtual money and judges you on your <b>strategy and reasoning</b>, not just returns. AlphaLab maps to that directly:<br><br>
       <b>Step 1.</b> My Holdings, press <b>Competition mode ($100K)</b>. You now have a clean cash balance.<br>
@@ -448,7 +464,10 @@ UI.def('guide', 'How To Use This', '?', 'Start Here', function (el, state) {
       <b>Ensemble Engine:</b> makes strategies compete, then blends the uncorrelated winners.<br>
       <b>Alpha Factory:</b> machine-generates candidate trading signals and keeps only the survivors.<br>
       <b>ML Lab:</b> trains machine-learning price models in your browser, honestly walk-forward.<br>
+      <b>Buy / Sell Decision:</b> the full one-screen verdict on any stock, fundamentals plus analysts plus news plus technicals.<br>
       <b>Stock Advisor:</b> ranks the entire US stock universe on eight factors and explains each pick.<br>
+      <b>Screener:</b> filter thousands of stocks by real fundamentals (value, growth, quality, dividends).<br>
+      <b>Peer Comparison:</b> line a stock up against its sector rivals on valuation and quality.<br>
       <b>Sentiment & News:</b> real news tone, social sentiment, and attention data per stock.<br>
       <b>Market Structure:</b> a map of which stocks actually trade together (PCA plus clustering).<br>
       <b>Strategy Composer:</b> build your own strategy from dropdowns, no code, full validation pipeline.<br>
@@ -487,14 +506,16 @@ UI.showWelcome = function () {
   ov.style.cssText = 'position:fixed;inset:0;background:#05070acc;z-index:1001;display:flex;align-items:flex-start;justify-content:center;padding-top:16vh';
   ov.innerHTML = `<div style="width:560px;max-width:92vw;background:#10141a;border:1px solid var(--line2);border-radius:10px;box-shadow:0 24px 80px #000c;padding:26px 30px">
     <div style="font-size:19px;font-weight:650;margin-bottom:8px">Welcome to AlphaLab</div>
-    <div class="note" style="font-size:13px;line-height:1.7;margin-bottom:14px">A research terminal for markets, built on 26 years of real data. You do not need any finance background: the guide explains every screen and every number in plain English, and there is a step-by-step playbook for investment competitions such as Wharton's.</div>
+    <div class="note" style="font-size:13px;line-height:1.7;margin-bottom:14px">A research terminal for markets, built on 26 years of real data plus live fundamentals, analyst targets, news, and social posts. No finance background needed. The best way to start is the guided tour, which drives the app for you and points at what matters.</div>
     <div style="display:flex;gap:10px;flex-wrap:wrap">
-      <button class="btn primary" id="w-guide">Open the guide</button>
+      <button class="btn primary" id="w-tour">Take the guided tour</button>
+      <button class="btn" id="w-guide">Open the guide</button>
       <button class="btn" id="w-wharton">Competition setup ($100K)</button>
       <button class="btn" id="w-skip">Just explore</button>
     </div></div>`;
   document.body.appendChild(ov);
   const close = () => { AL.store.set('seen_welcome', true); ov.remove(); };
+  ov.querySelector('#w-tour').addEventListener('click', () => { close(); UI.startTour(); });
   ov.querySelector('#w-guide').addEventListener('click', () => { close(); UI.focusModule('guide'); });
   ov.querySelector('#w-wharton').addEventListener('click', () => { close(); UI.focusModule('holdings', { wharton: true }); });
   ov.querySelector('#w-skip').addEventListener('click', close);

@@ -131,6 +131,10 @@ UI.commands = [
   { cmd: 'FACTOR SCAN', desc: 'Generate & test 25 candidate alpha factors', fn: () => UI.focusModule('alpha', { autoscan: true }) },
   { cmd: 'STRESS <scenario>', desc: 'Risk lab crisis replay: 2008, COVID, DOTCOM, 1987, 2022', fn: a => UI.focusModule('risk', { scenario: (a[0] || '2008').toUpperCase() }) },
   { cmd: 'REGIME', desc: 'Show current detected market regime', fn: () => UI.focusModule('dashboard') },
+  { cmd: 'DECIDE <sym>', desc: 'Full buy / sell / hold decision on a stock', fn: a => UI.focusModule('decision', a[0] ? { sym: a[0].toUpperCase() } : {}) },
+  { cmd: 'SCREEN', desc: 'Fundamental screener (value, growth, quality, dividends)', fn: () => UI.focusModule('screener') },
+  { cmd: 'PEERS <sym>', desc: 'Compare a stock to its sector peers on fundamentals', fn: a => UI.focusModule('peers', a[0] ? { sym: a[0].toUpperCase() } : {}) },
+  { cmd: 'TOUR', desc: 'Start the interactive guided tutorial', fn: () => UI.startTour() },
   { cmd: 'ADVISE', desc: 'Open the Stock Advisor (multi-factor recommendations)', fn: () => UI.focusModule('advisor') },
   { cmd: 'SENTIMENT <sym>', desc: 'News tone, social sentiment & attention for a ticker', fn: a => UI.focusModule('sentiment', a[0] ? { sym: a[0].toUpperCase() } : {}) },
   { cmd: 'GUIDE', desc: 'Open the plain-English how-to guide', fn: () => UI.focusModule('guide') },
@@ -138,7 +142,7 @@ UI.commands = [
   { cmd: 'HELP', desc: 'List terminal commands', fn: () => UI.openPalette('') },
 ];
 UI.goCmd = function (a) {
-  const map = { DASH: 'dashboard', MARKETS: 'markets', DATA: 'datahub', AI: 'researcher', ALPHA: 'alpha', STRAT: 'strategies', ML: 'mllab', PORT: 'portfolio', HOLD: 'holdings', RISK: 'risk', REPORTS: 'reports', KB: 'knowledge', ENSEMBLE: 'ensemble', FIRM: 'firm', STRUCT: 'structure', COMPOSE: 'composer', SEASON: 'seasonality', DD: 'drawdowns', GUIDE: 'guide' };
+  const map = { DASH: 'dashboard', MARKETS: 'markets', DATA: 'datahub', AI: 'researcher', ALPHA: 'alpha', STRAT: 'strategies', ML: 'mllab', PORT: 'portfolio', HOLD: 'holdings', RISK: 'risk', REPORTS: 'reports', KB: 'knowledge', ENSEMBLE: 'ensemble', FIRM: 'firm', STRUCT: 'structure', COMPOSE: 'composer', SEASON: 'seasonality', DD: 'drawdowns', GUIDE: 'guide', DECIDE: 'decision', SCREEN: 'screener', PEERS: 'peers' };
   const m = map[(a[0] || '').toUpperCase()];
   if (m) UI.focusModule(m);
 };

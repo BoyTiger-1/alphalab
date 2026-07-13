@@ -306,6 +306,23 @@ h3.sub { font-size: 11px; text-transform: uppercase; letter-spacing: 1.2px; colo
 .chip.on { border-color: var(--accent); color: var(--accent); background: #e8a33d14; }
 .chip .x { color: var(--muted); }
 
+/* interactive tour */
+#tour-overlay { position: fixed; inset: 0; z-index: 2000; pointer-events: none; }
+#tour-spot {
+  position: absolute; border-radius: 8px; pointer-events: none;
+  box-shadow: 0 0 0 9999px rgba(5, 7, 10, 0.72), 0 0 0 2px var(--accent);
+  transition: left 0.3s ease, top 0.3s ease, width 0.3s ease, height 0.3s ease;
+}
+#tour-card {
+  position: absolute; width: 420px; max-width: 92vw; pointer-events: auto;
+  background: #10141a; border: 1px solid var(--line2); border-radius: 10px;
+  box-shadow: 0 24px 80px #000c; padding: 18px 20px; transition: left 0.3s ease, top 0.3s ease;
+}
+#tour-step { font-family: var(--mono); font-size: 10px; letter-spacing: 1px; color: var(--accent); text-transform: uppercase; }
+#tour-title { font-size: 16px; font-weight: 650; margin: 4px 0 8px; }
+#tour-body { font-size: 13px; line-height: 1.6; color: var(--ink2); }
+#tour-nav { display: flex; align-items: center; gap: 8px; margin-top: 14px; }
+
 @media print {
   body { background: #fff; color: #111; overflow: visible; }
   #topbar, #rail, #tabstrip, #statusbar, .no-print { display: none !important; }

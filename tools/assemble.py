@@ -24,11 +24,15 @@ PARTS = {
     "/*__MODULES_D__*/": os.path.join(APP, "modules_d.js"),
     "/*__MODULES_E__*/": os.path.join(APP, "modules_e.js"),
     "/*__MODULES_F__*/": os.path.join(APP, "modules_f.js"),
+    "/*__MODULES_G__*/": os.path.join(APP, "modules_g.js"),
+    "/*__TUTORIAL__*/": os.path.join(APP, "tutorial.js"),
     "/*__SP500__*/": os.path.join(ROOT, "data", "sp500.js"),
     "/*__MARKET__*/": os.path.join(ROOT, "data", "market.js"),
+    "/*__FUND__*/": os.path.join(ROOT, "data", "fundamentals.js"),
+    "/*__NEWS__*/": os.path.join(ROOT, "data", "newsfeed.js"),
 }
 # data bundles that may be absent in a minimal build
-OPTIONAL = {"/*__ALTDATA__*/", "/*__SP500__*/", "/*__MARKET__*/"}
+OPTIONAL = {"/*__ALTDATA__*/", "/*__SP500__*/", "/*__MARKET__*/", "/*__FUND__*/", "/*__NEWS__*/"}
 
 html = open(os.path.join(APP, "index.html"), encoding="utf-8").read()
 for marker, path in PARTS.items():

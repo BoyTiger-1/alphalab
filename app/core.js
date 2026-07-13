@@ -54,6 +54,11 @@ AL.getSeries = function (sym) {
   return s;
 };
 AL.sp500 = () => window.ALPHALAB_SP500 || null;
+// real per-stock fundamentals (Yahoo) and news/social bundles, if shipped
+AL.fund = sym => (window.ALPHALAB_FUND && window.ALPHALAB_FUND.tickers[sym]) || null;
+AL.fundMeta = () => window.ALPHALAB_FUND || null;
+AL.newsFor = sym => (window.ALPHALAB_NEWS && window.ALPHALAB_NEWS.tickers[sym]) || null;
+AL.newsMeta = () => window.ALPHALAB_NEWS || null;
 // bars per year for a series: weekly universe annualizes at 52, daily at 252
 AL.freq = ser => ser && ser.weekly ? 52 : 252;
 // any daily series resampled onto the shared weekly grid (for cross-frequency math)

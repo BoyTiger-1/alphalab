@@ -18,7 +18,10 @@
 
 AlphaLab does the work of a quantitative research team in a single self-contained page:
 
-- **Stock Advisor**: ranks every listed US stock, over 4,400 names, on eight factors (momentum, trend, risk-adjusted return, volatility, consistency, market-regime fit, and real sentiment) and explains each pick in plain English, with suggested position sizes and confidence levels
+- **Buy / Sell Decision engine**: type any ticker and get one screen fusing eight technical factors, real fundamentals (P/E, growth, margins, balance sheet), Wall Street analyst price targets and the full buy/hold/sell split, earnings-surprise history, real news headlines, and real investor posts into a single BUY, HOLD, or SELL with a bull case and a bear case
+- **Interactive guided tour**: a spotlight tutorial that drives the real app for you, one screen at a time, so a first-time user learns the whole workflow in minutes
+- **Fundamental screener and peer comparison**: filter 4,400+ stocks by value, growth, quality, dividends, or analyst upside, and line any stock up against its sector rivals
+- **Stock Advisor**: ranks every listed US stock, over 4,400 names, on twelve factors (technical momentum and trend, risk-adjusted return, volatility, consistency, sector-relative strength, regime fit, sentiment, plus fundamental valuation, quality, growth, and analyst upside) (momentum, trend, risk-adjusted return, volatility, consistency, market-regime fit, and real sentiment) and explains each pick in plain English, with suggested position sizes and confidence levels
 - **Real sentiment intelligence**: worldwide news tone and coverage volume from GDELT, investor social sentiment from StockTwits, and public attention from Wikipedia pageviews, bundled per ticker and refreshable live from the browser
 - **Portfolio management**: enter or CSV-import any portfolio, track it against real closing prices, get an AI review with statistical justification, and generate a written Investment Strategy Report ready to print
 - **Competition mode**: one click gives you $100,000 of virtual cash with full buy/sell cash accounting, built for contests like the Wharton Global Investment Competition
@@ -29,11 +32,24 @@ AlphaLab does the work of a quantitative research team in a single self-containe
 - **A risk laboratory**: replay your exact portfolio through 2008, COVID, 2022, the dot-com crash, and Black Monday 1987, plus Monte Carlo simulation, VaR ladders, and rate-shock sensitivities
 - **A built-in guide** that explains every screen and every number in plain English, written for people who have never invested before
 
-Everything computes on real data across three tiers: 78 flagship instruments (majors, ETFs, futures, FX, crypto) with full daily history back to 2000 (S&P 500 back to 1970), every S&P 500 constituent with 10 years of weekly prices and sector labels, and every listed US common stock above a small size floor, about 3,900 more names, with 3 years of weekly prices (the same coverage idea as a total-market index fund). Macro comes from FRED, crypto from Coinbase, news/social/attention from GDELT, StockTwits, and Wikipedia. Nothing is simulated. A GitHub Action refreshes the whole snapshot on weekday mornings.
+Everything computes on real data across three tiers: 78 flagship instruments (majors, ETFs, futures, FX, crypto) with full daily history back to 2000 (S&P 500 back to 1970), every S&P 500 constituent with 10 years of weekly prices and sector labels, and every listed US common stock above a small size floor, about 3,900 more names, with 3 years of weekly prices (the same coverage idea as a total-market index fund). On top of prices, the platform bundles real per-stock fundamentals for about 900 large-caps from Yahoo Finance (valuation, growth, margins, balance sheet, analyst price targets and recommendation splits, earnings surprises), real news headlines from GDELT, and real investor posts from StockTwits. Macro comes from FRED, crypto from Coinbase, attention from Wikipedia. Nothing is simulated. A GitHub Action refreshes the whole snapshot on weekday mornings, and the decision engine can pull the latest headlines live from your browser.
+
+## The Buy / Sell Decision engine
+
+The fastest way to judge a single stock. Type a ticker and AlphaLab fuses, all on real data:
+
+- **Technical** (28% weight): the eight-factor momentum, trend, volatility, and consistency read
+- **Analyst** (20%): upside to the mean price target, the strong-buy-to-strong-sell consensus split, and the earnings-surprise track record
+- **Quality** (14%): profit margins, return on equity, and leverage
+- **Growth** (14%): revenue and earnings expansion
+- **Value** (14%): valuation multiples versus sector peers
+- **Sentiment** (10%): news-tone trend and investor-post lean
+
+It prints a single **BUY, HOLD, or SELL** with a composite score, a bull case and a bear case built from the specific real numbers, the analyst target panel, the earnings-surprise table, real news headlines, real StockTwits posts, and a plain "what would change this call" note. Every reason is a number you can cite, and it never trades for you.
 
 ## New to investing? Start here
 
-The site opens with a welcome screen that points you to **How To Use This** in the left menu. That guide contains a five-step walkthrough, a dictionary of every financial term on the site (Sharpe ratio, drawdown, VaR, beta, backtest, and the rest), a description of what every module is for, and a warning section on how to read results without fooling yourself. You need zero finance background.
+The site opens with a welcome screen offering a **guided tour**: an interactive tutorial that drives the real app for you, opening each screen and pointing at what matters. It is the fastest way to learn AlphaLab. There is also a full written **How To Use This** guide in the left menu. That guide contains a five-step walkthrough, a dictionary of every financial term on the site (Sharpe ratio, drawdown, VaR, beta, backtest, and the rest), a description of what every module is for, and a warning section on how to read results without fooling yourself. You need zero finance background.
 
 The short version:
 
@@ -106,6 +122,9 @@ Deep links work too: `#risk`, `#advisor`, `#guide`, `#strat=S035`, `#chart=GLD`.
 | **Markets** | Sortable screener of every instrument with real return/vol/Sharpe/drawdown stats |
 | **Data Hub** | Dataset catalog, quality audit, CSV upload (your file becomes a first-class instrument) |
 | **Stock Advisor** | Seven-factor stock recommendations with written theses and suggested weights |
+| **Buy / Sell Decision** | One-screen verdict on any stock: technicals, fundamentals, analyst targets, earnings, news, and posts fused into BUY/HOLD/SELL with bull and bear cases |
+| **Screener** | Filter 4,400+ stocks by real fundamentals: value, growth, quality, dividends, GARP, analyst upside |
+| **Peer Comparison** | Line a stock up against its closest sector rivals on valuation and quality |
 | **Sentiment & News** | Real news tone, coverage volume, social sentiment, and attention per ticker, with live refresh |
 | **Market Structure** | PCA map of the whole index with k-means clusters: which stocks actually trade together |
 | **Strategy Composer** | Build your own strategy from dropdowns, no code, run through the full validation pipeline |
