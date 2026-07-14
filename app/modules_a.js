@@ -104,6 +104,7 @@ UI.boot = function () {
   else if (hash.startsWith('strat=')) UI.openTab('stratDetail', { sid: hash.slice(6).toUpperCase() });
   else if (UI.MODULES[hash]) UI.openTab(hash);
   else UI.openTab('dashboard');
+  if (hash === 'tour') { setTimeout(() => UI.startTour(), 300); return; }   // shareable tour link
   if (UI.showWelcome) UI.showWelcome();   // first-visit onboarding, defined in modules_d
   // fun: greet in feed
   RS.pushLog(`AlphaLab research OS online. ${Object.keys(AL.D.series).length + Object.keys(AL.D.crypto).length} instruments, ${Object.keys(AL.D.fred).length} macro series loaded (as-of ${AL.asof}).`, 'sys');
