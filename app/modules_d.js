@@ -425,6 +425,15 @@ UI.def('guide', 'How To Use This', '?', 'Start Here', function (el, state) {
       <b>5. Stress test it.</b> Open <b>Risk Lab</b>. It replays your exact portfolio through 2008, COVID, and Black Monday using real data and shows the dollar loss you would have taken. If that number scares you, diversify more.<br><br>
       <b>6. Get the report.</b> In My Holdings, press "Strategy report" for a written investment strategy document, ideal for competition submissions.`)}
     ${g('The Buy / Sell Decision engine, explained', `This is the deepest single-stock view on the site. For any ticker it pulls together, all on real data: the eight technical factors, real fundamentals from Yahoo Finance (valuation multiples, revenue and earnings growth, profit margins, return on equity, debt, dividend yield), Wall Street analyst price targets and the full strong-buy-to-strong-sell split, the last four quarters of earnings surprises, real news headlines from GDELT, and real investor posts from StockTwits. It weighs technical 28%, analyst 20%, quality/growth/value 14% each, and sentiment 10%, then prints a BUY, HOLD, or SELL with the specific reasons for and against. Every reason is a real number you can cite, and it always tells you what would change the call.`)}
+    ${g('Worked example: deciding on a stock start to finish', `
+      Say you are curious about a company. Here is the exact routine, using only real data on this site:<br><br>
+      <b>1.</b> Open <b>Buy / Sell Decision</b>, type the ticker, press Analyze. Read the call and the composite score at the top right. Suppose it says BUY at +0.34.<br>
+      <b>2.</b> Look at the factor bars to see <i>why</i>. Maybe Quality and Growth are strongly positive (fat margins, fast sales growth) and Analyst is positive (20% upside to target), but Value is negative (it is expensive versus peers). Now you understand the trade-off: a great business, but you are paying up for it.<br>
+      <b>3.</b> Read the bull case and bear case, which spell those out in words, and glance at the earnings-surprise table, a run of beats is a good sign.<br>
+      <b>4.</b> Sanity-check the price with <b>Peer Comparison</b>. If it is the most expensive name in its sector on every measure, the growth had better justify it.<br>
+      <b>5.</b> Check the downside with the <b>Drawdown Analyzer</b>, how far has this stock fallen before, and how long did it take to recover? That is what you must be willing to sit through.<br>
+      <b>6.</b> If you still like it, add it in <b>My Holdings</b> (or press Add to My Holdings right on the decision page), keep the position modest, then run the <b>Risk Lab</b> to see how it behaves in a crash alongside your other holdings.<br>
+      <b>7.</b> Decide your exit rule <i>now</i>: a price where you would sell, or a change (a broken trend, a bad earnings report, analyst downgrades) that would flip the call. The decision page even lists what would change it. Deciding in advance beats deciding in a panic.`)}
     ${g('Playbook: Wharton Global Investment Competition', `
       The competition gives your team about $100,000 of virtual money and judges you on your <b>strategy and reasoning</b>, not just returns. AlphaLab maps to that directly:<br><br>
       <b>Step 1.</b> My Holdings, press <b>Competition mode ($100K)</b>. You now have a clean cash balance.<br>
@@ -454,7 +463,26 @@ UI.def('guide', 'How To Use This', '?', 'Start Here', function (el, state) {
       <b>Backtest:</b> replaying a rule on history to see what it would have done. Good backtests charge trading costs and never peek at the future; AlphaLab does both.<br>
       <b>Out-of-sample:</b> testing on data the strategy was never tuned on. The only evidence that matters.<br>
       <b>IC (information coefficient):</b> correlation between a signal and what actually happened next. 0.05 is genuinely useful; 0.3 is a bug.<br>
-      <b>Turnover:</b> how much trading a strategy does. High turnover = costs eat the edge.`)}
+      <b>Turnover:</b> how much trading a strategy does. High turnover = costs eat the edge.<br>
+      <b>P/E ratio:</b> price divided by earnings per share, the dollars you pay per dollar of annual profit. 15 is average, under 12 is cheap, over 30 needs strong growth to justify.<br>
+      <b>Forward P/E:</b> the same, but using next year's expected earnings. Lower than the trailing P/E means analysts expect profits to grow.<br>
+      <b>PEG ratio:</b> P/E divided by the growth rate. Below 1 is often considered cheap for how fast the company is growing; above 2 is pricey.<br>
+      <b>Price/book:</b> price versus the company's net assets. Useful for banks and asset-heavy firms; less meaningful for software.<br>
+      <b>Net margin:</b> the share of every sales dollar kept as profit. 20%+ is excellent, near 0 or negative is a warning.<br>
+      <b>Gross margin:</b> sales minus the direct cost of making the product, as a share of sales. High and stable gross margins signal pricing power.<br>
+      <b>ROE (return on equity):</b> profit as a percentage of shareholder money. Above 15% is good; very high figures can also come from heavy debt, so read it with debt/equity.<br>
+      <b>Debt/equity:</b> how much the company borrows versus what shareholders own. Over about 200 is heavy and risky if profits wobble.<br>
+      <b>Revenue growth:</b> how fast sales are rising year over year. Positive and accelerating is what you want; negative means the business is shrinking.<br>
+      <b>Dividend yield:</b> the annual dividend as a percentage of price, the cash a share pays you just to hold it.<br>
+      <b>Analyst price target:</b> where the average Wall Street analyst thinks the stock will trade in a year. Analysts skew optimistic, so treat it as one opinion, not a promise.<br>
+      <b>Consensus rating:</b> the blend of analyst calls from strong buy to strong sell. A buy consensus with a big gap up to the target is a real positive.<br>
+      <b>Earnings surprise:</b> how much actual profit beat or missed the estimate last quarter. A run of beats signals a company that keeps exceeding expectations.<br>
+      <b>Market cap:</b> share price times shares outstanding, the total value of the company. Large caps are steadier; small caps swing more.<br>
+      <b>Sortino ratio:</b> like Sharpe, but it only counts downside swings as risk. Rewards strategies that are only volatile to the upside.<br>
+      <b>Sentiment (news tone):</b> whether coverage of a stock reads positive or negative on average. Rising tone can precede a move; euphoric extremes often precede a pullback.<br>
+      <b>Regime:</b> the market's current mood, calm or stressed, detected statistically. It decides whether the model favors aggressive or defensive stocks.<br>
+      <b>Cointegration:</b> two stocks tied together so their gap tends to snap back. The basis of pairs trading, and it is tested statistically here (the ADF number).<br>
+      <b>Monte Carlo:</b> simulating thousands of possible futures by reshuffling real history, to see the range of outcomes rather than a single guess.`)}
     ${g('What each module is for', `
       <b>Command Center:</b> the market at a glance, plus the current regime.<br>
       <b>Markets:</b> a screener of every instrument with real stats.<br>

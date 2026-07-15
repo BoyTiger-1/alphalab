@@ -191,11 +191,11 @@ UI.def('decision', 'Buy / Sell Decision', '⚖', 'Advisory', function (el, state
             <div class="panel"><div class="panel-head" style="color:var(--dn)">Bear case</div><div class="panel-body">${d.fscore && d.fscore.bear.length ? d.fscore.bear.map(b => `<div class="kv"><span class="k" style="color:var(--dn)">-</span><span class="v" style="font-family:var(--sans);text-align:left;flex:1;margin-left:8px">${f.esc(b)}</span></div>`).join('') : '<div class="note">No major red flags in the fundamental data.</div>'}${d.tech && d.tech.vol > 0.5 ? `<div class="kv"><span class="k" style="color:var(--dn)">-</span><span class="v" style="font-family:var(--sans);text-align:left;flex:1;margin-left:8px">elevated volatility (${f.pct(d.tech.vol, 0)} annualized), expect swings</span></div>` : ''}</div></div>
           </div>
           ${UI.panel('Price, 2 years', '<div class="chart h240" id="dc-px"></div>', { nopad: true })}
-          ${fd ? UI.panel('Fundamentals <span class="badge ok">real, Yahoo Finance</span>', fundTable(fd, px, f)) : UI.panel('Fundamentals', '<div class="note">No fundamental data bundled for this ticker. The S&P 500 and large-cap names have full coverage.</div>')}
+          ${fd ? UI.panel('Fundamentals <span class="badge ok">real, Yahoo Finance</span>', '<div id="dc-fund">' + fundTable(fd, px, f) + '</div>') : UI.panel('Fundamentals', '<div class="note">No fundamental data bundled for this ticker. The S&P 500 and large-cap names have full coverage.</div>')}
           ${fd && fd.eps && fd.eps.length ? UI.panel('Earnings surprises (last 4 quarters)', epsTable(fd.eps, f)) : ''}
         </div>
         <div style="display:flex;flex-direction:column;gap:12px;min-width:0">
-          ${fd && fd.rec ? UI.panel('Wall Street consensus', analystPanel(fd, px, f)) : ''}
+          ${fd && fd.rec ? UI.panel('Wall Street consensus', '<div id="dc-analyst">' + analystPanel(fd, px, f) + '</div>') : ''}
           ${UI.panel('News headlines <span class="badge ' + (nf && nf.news ? 'ok' : 'dim') + '">' + (nf && nf.news ? 'real, GDELT' : 'live fetch') + '</span>', `<div id="dc-news">${newsList(nf, f)}</div><button class="btn small" id="dc-news-live" style="margin-top:8px">Fetch latest headlines</button>`)}
           ${UI.panel('Investor posts <span class="badge ' + (nf && nf.posts ? 'ok' : 'dim') + '">' + (nf && nf.posts ? 'real, StockTwits' : 'none bundled') + '</span>', `<div id="dc-posts">${postList(nf, f)}</div>`)}
           ${UI.panel('What would change this call', changeNote(d, fd, px, f))}

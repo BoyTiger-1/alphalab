@@ -104,7 +104,7 @@ UI.boot = function () {
   else if (hash.startsWith('strat=')) UI.openTab('stratDetail', { sid: hash.slice(6).toUpperCase() });
   else if (UI.MODULES[hash]) UI.openTab(hash);
   else UI.openTab('dashboard');
-  if (hash === 'tour') { setTimeout(() => UI.startTour(), 300); return; }   // shareable tour link
+  if (hash === 'tour' || hash.startsWith('tour=')) { const s = +hash.split('=')[1] || 0; setTimeout(() => UI.startTour(s), 300); return; }   // shareable tour link, optional start step
   if (UI.showWelcome) UI.showWelcome();   // first-visit onboarding, defined in modules_d
   // fun: greet in feed
   RS.pushLog(`AlphaLab research OS online. ${Object.keys(AL.D.series).length + Object.keys(AL.D.crypto).length} instruments, ${Object.keys(AL.D.fred).length} macro series loaded (as-of ${AL.asof}).`, 'sys');
