@@ -47,7 +47,10 @@ const t0 = Date.now();
 const res = UI.scoreStocks();
 const dt = Date.now() - t0;
 const res2 = UI.scoreStocks();
-check('scoreStocks + cache', res.rows.length > 4000 && res2 === res, `${res.rows.length} stocks in ${dt}ms, cached on 2nd call`);
+// floor at 3500, not a round 4000: the listed universe drifts (delistings, screener changes)
+// around ~4000, so a tight bound fails CI on normal churn. A broken bundle load collapses to
+// the ~570 flagship+S&P names, well under this floor, which is what we actually want to catch.
+check('scoreStocks + cache', res.rows.length > 3500 && res2 === res, `${res.rows.length} stocks in ${dt}ms, cached on 2nd call`);
 const withFund = res.rows.filter(r => r.hasFund).length;
 check('advisor uses fundamentals', withFund > 700, `${withFund} rows carry fundamental pillars`);
 

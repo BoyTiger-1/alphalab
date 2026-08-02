@@ -140,6 +140,8 @@ UI.commands = [
   { cmd: 'SENTIMENT <sym>', desc: 'News tone, social sentiment & attention for a ticker', fn: a => UI.focusModule('sentiment', a[0] ? { sym: a[0].toUpperCase() } : {}) },
   { cmd: 'GUIDE', desc: 'Open the plain-English how-to guide', fn: () => UI.focusModule('guide') },
   { cmd: 'COMP', desc: 'Set up competition mode ($100K virtual cash)', fn: () => UI.focusModule('holdings', { wharton: true }) },
+  { cmd: 'PLAN [amount]', desc: 'Competition Center: build a full multi-asset competition portfolio', fn: a => UI.focusModule('command', a[0] ? { capital: Math.max(1000, parseFloat(a[0].replace(/[$,]/g, '')) || 100000) } : {}) },
+  { cmd: 'TODAY', desc: 'Competition Center daily briefing: what to trade today', fn: () => UI.focusModule('command', { view: 'daily' }) },
   { cmd: 'HELP', desc: 'List terminal commands', fn: () => UI.openPalette('') },
 ];
 UI.goCmd = function (a) {

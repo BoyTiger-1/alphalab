@@ -484,6 +484,7 @@ UI.def('guide', 'How To Use This', '?', 'Start Here', function (el, state) {
       <b>Cointegration:</b> two stocks tied together so their gap tends to snap back. The basis of pairs trading, and it is tested statistically here (the ADF number).<br>
       <b>Monte Carlo:</b> simulating thousands of possible futures by reshuffling real history, to see the range of outcomes rather than a single guess.`)}
     ${g('What each module is for', `
+      <b>Competition Center:</b> set your starting money and risk level and get a full multi-asset portfolio, real tickers with exact share counts, plus a daily briefing of what to trade. Built for investing competitions.<br>
       <b>Command Center:</b> the market at a glance, plus the current regime.<br>
       <b>Markets:</b> a screener of every instrument with real stats.<br>
       <b>Data Hub:</b> see every dataset, upload your own CSVs.<br>

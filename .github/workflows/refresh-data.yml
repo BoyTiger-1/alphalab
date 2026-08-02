@@ -51,6 +51,7 @@ jobs:
           node tools/smoke.js
           node tools/test_firm.js
           node tools/test_decision.js
+          node tools/test_command.js
 
       - name: Commit & push if data changed
         run: |

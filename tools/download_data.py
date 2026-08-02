@@ -23,15 +23,22 @@ UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
 YAHOO = {
     # Broad market / style ETFs
     "SPY": "SPDR S&P 500 ETF", "QQQ": "Invesco Nasdaq-100 ETF", "IWM": "iShares Russell 2000 ETF",
-    "DIA": "SPDR Dow Jones ETF", "EFA": "iShares MSCI EAFE ETF", "EEM": "iShares MSCI EM ETF",
+    "DIA": "SPDR Dow Jones ETF", "VTI": "Vanguard Total US Stock Market ETF",
+    "EFA": "iShares MSCI EAFE ETF", "EEM": "iShares MSCI EM ETF",
     "VTV": "Vanguard Value ETF", "VUG": "Vanguard Growth ETF", "MTUM": "iShares Momentum Factor ETF",
-    "QUAL": "iShares Quality Factor ETF", "USMV": "iShares Min Vol Factor ETF",
+    "QUAL": "iShares Quality Factor ETF", "USMV": "iShares Min Vol Factor ETF", "SCHD": "Schwab US Dividend Equity ETF",
+    # International equity (broad + single-country)
+    "VEA": "Vanguard Developed Markets ETF", "VWO": "Vanguard Emerging Markets ETF",
+    "EWJ": "iShares MSCI Japan ETF", "FXI": "iShares China Large-Cap ETF", "INDA": "iShares MSCI India ETF",
+    "EWZ": "iShares MSCI Brazil ETF", "EWG": "iShares MSCI Germany ETF", "EWU": "iShares MSCI United Kingdom ETF",
     # Fixed income
     "TLT": "iShares 20+Y Treasury ETF", "IEF": "iShares 7-10Y Treasury ETF", "SHY": "iShares 1-3Y Treasury ETF",
     "LQD": "iShares IG Corporate ETF", "HYG": "iShares High Yield ETF", "TIP": "iShares TIPS ETF",
+    "BND": "Vanguard Total Bond Market ETF", "EMB": "iShares EM Sovereign Bond ETF", "BIL": "SPDR 1-3 Month T-Bill ETF",
     # Commodities / real assets
     "GLD": "SPDR Gold Shares", "SLV": "iShares Silver Trust", "USO": "United States Oil Fund",
-    "DBC": "Invesco DB Commodity ETF", "VNQ": "Vanguard Real Estate ETF",
+    "DBC": "Invesco DB Commodity ETF", "DBA": "Invesco DB Agriculture ETF", "GDX": "VanEck Gold Miners ETF",
+    "VNQ": "Vanguard Real Estate ETF",
     # Sector SPDRs
     "XLF": "Financials SPDR", "XLK": "Technology SPDR", "XLE": "Energy SPDR", "XLV": "Health Care SPDR",
     "XLY": "Cons Discretionary SPDR", "XLP": "Cons Staples SPDR", "XLI": "Industrials SPDR",

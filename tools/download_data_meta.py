@@ -5,10 +5,12 @@ import os
 ETF = "ETF"; EQ = "Equity"; IDX = "Index"; FX = "FX"; FUT = "Futures"
 
 YAHOO_CLS = {
-    "SPY": ETF, "QQQ": ETF, "IWM": ETF, "DIA": ETF, "EFA": ETF, "EEM": ETF,
-    "VTV": ETF, "VUG": ETF, "MTUM": ETF, "QUAL": ETF, "USMV": ETF,
+    "SPY": ETF, "QQQ": ETF, "IWM": ETF, "DIA": ETF, "VTI": ETF, "EFA": ETF, "EEM": ETF,
+    "VTV": ETF, "VUG": ETF, "MTUM": ETF, "QUAL": ETF, "USMV": ETF, "SCHD": ETF,
+    "VEA": ETF, "VWO": ETF, "EWJ": ETF, "FXI": ETF, "INDA": ETF, "EWZ": ETF, "EWG": ETF, "EWU": ETF,
     "TLT": ETF, "IEF": ETF, "SHY": ETF, "LQD": ETF, "HYG": ETF, "TIP": ETF,
-    "GLD": ETF, "SLV": ETF, "USO": ETF, "DBC": ETF, "VNQ": ETF,
+    "BND": ETF, "EMB": ETF, "BIL": ETF,
+    "GLD": ETF, "SLV": ETF, "USO": ETF, "DBC": ETF, "DBA": ETF, "GDX": ETF, "VNQ": ETF,
     "XLF": ETF, "XLK": ETF, "XLE": ETF, "XLV": ETF, "XLY": ETF, "XLP": ETF,
     "XLI": ETF, "XLU": ETF, "XLB": ETF,
     "AAPL": EQ, "MSFT": EQ, "NVDA": EQ, "AMZN": EQ, "GOOGL": EQ, "META": EQ,
