@@ -186,8 +186,9 @@ AL.lastCloseRaw = function (sym) { const s = AL.getSeries(sym); return s ? s.val
 AL.live = {
   px: {}, chg: {},          // sym -> latest live price / % change vs prior close
   ts: 0, timer: null, running: false,
-  // a key pasted into the LIVE badge (localStorage) always wins; otherwise fall back to a key baked
-  // into a LOCAL-only build (window.ALPHALAB_LIVE_KEY), which the public site never carries.
+  // a key pasted into the LIVE badge (localStorage) always wins; otherwise fall back to the shared
+  // key baked into the build (window.ALPHALAB_LIVE_KEY, from app/livekey.js) so live quotes work
+  // for everyone out of the box with nothing to paste.
   key() { return AL.store.get('live_finnhub_key', null) || (typeof window !== 'undefined' && window.ALPHALAB_LIVE_KEY) || null; },
   setKey(k) { k ? AL.store.set('live_finnhub_key', k) : AL.store.del('live_finnhub_key'); },
 

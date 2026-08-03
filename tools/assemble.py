@@ -31,9 +31,11 @@ PARTS = {
     "/*__MARKET__*/": os.path.join(ROOT, "data", "market.js"),
     "/*__FUND__*/": os.path.join(ROOT, "data", "fundamentals.js"),
     "/*__NEWS__*/": os.path.join(ROOT, "data", "newsfeed.js"),
+    "/*__LIVEKEY__*/": os.path.join(APP, "livekey.js"),
 }
-# data bundles that may be absent in a minimal build
-OPTIONAL = {"/*__ALTDATA__*/", "/*__SP500__*/", "/*__MARKET__*/", "/*__FUND__*/", "/*__NEWS__*/"}
+# parts that may be absent in a minimal build. livekey.js is optional so a checkout without it still
+# builds; the app then just falls back to a key pasted into the LIVE badge.
+OPTIONAL = {"/*__ALTDATA__*/", "/*__SP500__*/", "/*__MARKET__*/", "/*__FUND__*/", "/*__NEWS__*/", "/*__LIVEKEY__*/"}
 
 html = open(os.path.join(APP, "index.html"), encoding="utf-8").read()
 for marker, path in PARTS.items():
@@ -45,22 +47,6 @@ for marker, path in PARTS.items():
         raise SystemExit(f"refusing: {path} contains </script>")
     html = html.replace(marker, src)
 
-# The committed, publicly-served build never carries a key: the LIVE badge reads one from the
-# browser's localStorage instead. So the marker is blanked here and this file is safe to push.
-clean = html.replace("/*__LIVEKEY__*/", "/* live-price key: paste yours in the LIVE badge (stored in your browser only) */")
 out = os.path.join(DIST, "alphalab.html")
-open(out, "w", encoding="utf-8").write(clean)
-print(f"{out}: {len(clean)/1e6:.2f} MB")
-
-# Optional convenience: if a gitignored livekey.local.js exists, also emit a LOCAL-only build with
-# the key baked in so you never have to paste it on your own machine. Both livekey.local.js and this
-# output are gitignored, so the secret never reaches git or GitHub Pages.
-keyfile = os.path.join(ROOT, "livekey.local.js")
-if os.path.exists(keyfile):
-    keysrc = open(keyfile, encoding="utf-8").read()
-    if "</script" in keysrc.lower():
-        raise SystemExit("refusing: livekey.local.js contains </script>")
-    local = html.replace("/*__LIVEKEY__*/", keysrc)
-    lout = os.path.join(DIST, "alphalab.local.html")
-    open(lout, "w", encoding="utf-8").write(local)
-    print(f"{lout}: {len(local)/1e6:.2f} MB  (LOCAL ONLY, gitignored, has your live-price key)")
+open(out, "w", encoding="utf-8").write(html)
+print(f"{out}: {len(html)/1e6:.2f} MB")

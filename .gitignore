@@ -1,7 +1,4 @@
-# live-price API key: local only, never committed. the public build reads a key from the browser's
-# localStorage (paste it in the LIVE badge); livekey.local.js is only baked into the local build below.
-livekey.local.js
-dist/alphalab.local.html
+# local environment / secrets that are not part of the app
 .env
 
 # raw API downloads are a rebuildable cache (~50MB) — regenerate with tools/download_data.py
