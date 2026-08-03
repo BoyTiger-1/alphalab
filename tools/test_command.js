@@ -72,5 +72,35 @@ const brief2 = UI.dailyBriefing(target);
 check('on-target book -> few/no trades', brief2.orders.length <= 1 && brief2.maxDrift < 0.03,
   `${brief2.orders.length} orders, max drift ${(brief2.maxDrift * 100).toFixed(2)}%`);
 
+// --- multi-engine synthesis: the briefing fuses decision + advisor + sentiment ------------
+check('briefing exposes protect / opportunities / risks arrays', Array.isArray(brief2.protect) && Array.isArray(brief2.opportunities) && Array.isArray(brief2.risks),
+  `protect ${brief2.protect.length}, opportunities ${brief2.opportunities.length}, risks ${brief2.risks.length}`);
+check('rebalance orders are annotated with a decision call slot', brief2.orders.every(o => 'call' in o && 'conviction' in o),
+  brief2.orders.map(o => `${o.sym}:${o.call || '-'}`).join(' ') || 'no orders');
+// per-name fusion: a covered single stock gets a bounded conviction + human reasons...
+const pk = picks[0] ? picks[0].sym : 'AAPL';
+const sc = UI.symConviction(pk, UI.scoreStocks());
+check('symConviction fuses engines for a real stock', sc && sc.nEngines >= 1 && Math.abs(sc.conviction) <= 1.0001 && sc.why.length >= 1,
+  sc ? `${pk}: conv ${sc.conviction.toFixed(2)} across ${sc.nEngines} engine(s)` : `${pk}: null`);
+check('symConviction agree count never exceeds engines that voted', !sc || (sc.agree >= 0 && sc.agree <= sc.nEngines),
+  sc ? `${sc.agree}/${sc.nEngines}` : 'n/a');
+// ...but a structural ETF sleeve (bonds/gold) no engine covers returns null, so it is never flagged
+const structural = ['IEF', 'TLT', 'GLD', 'TIP'].filter(s => AL.getSeries(s));
+const nulled = structural.filter(s => UI.symConviction(s, UI.scoreStocks()) == null);
+check('structural ETFs are not stock-scored (null conviction)', structural.length === 0 || nulled.length >= Math.ceil(structural.length / 2),
+  `${nulled.length}/${structural.length} of ${structural.join(',')} null`);
+// opportunities, when present, are un-owned large-caps the decision engine does not reject
+const heldNow = new Set(asBook.map(h => h.sym));
+check('opportunities are un-owned & not SELL-rated', brief2.opportunities.every(o => !heldNow.has(o.sym) && o.conviction > 0.30 && o.why.length >= 1),
+  brief2.opportunities.map(o => `${o.sym}:${o.conviction.toFixed(2)}`).join(' ') || 'none surfaced');
+
+// --- concentration overlay: an over-weighted single position gets flagged -----------------
+const bigSym = AL.getSeries('SPY') ? 'SPY' : (asBook[0] && asBook[0].sym);
+AL.store.set('holdings', [{ sym: bigSym, qty: 400, costBasis: AL.getSeries(bigSym).values.slice(-1)[0] }]);
+AL.store.set('cash', 0);
+const brief3 = UI.dailyBriefing(target);
+check('concentration risk flags a lone oversized position', brief3.risks.some(r => r.sym === bigSym && r.weight > 0.25),
+  brief3.risks.map(r => `${r.sym} ${(r.weight * 100).toFixed(0)}%`).join(', ') || 'none');
+
 console.log(fails ? `\n${fails} FAILURES` : '\nALL PASS');
 process.exit(fails ? 1 : 0);

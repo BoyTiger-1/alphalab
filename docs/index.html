@@ -84,8 +84,20 @@ b.up, b.dn { font-family: var(--mono); }
 .rail-group { margin-bottom: 12px; }
 .rail-head {
   font-size: 9px; letter-spacing: 1.5px; text-transform: uppercase; color: var(--muted);
-  padding: 4px 14px;
+  padding: 4px 14px; cursor: pointer; user-select: none;
+  display: flex; align-items: center; gap: 6px;
 }
+.rail-head:hover { color: var(--ink2); }
+.rail-head .caret { font-size: 8px; width: 8px; opacity: 0.7; }
+.rail-group.collapsed .rail-items { display: none; }
+
+/* a fold-away help block (used for the competition playbook) */
+details.playbook { border: 1px solid var(--line); border-radius: 6px; padding: 8px 12px; background: var(--surf); }
+details.playbook > summary { cursor: pointer; color: var(--accent); font-size: 12px; font-weight: 600; list-style: none; }
+details.playbook > summary::-webkit-details-marker { display: none; }
+details.playbook > summary::before { content: '\25B8\00a0'; }
+details.playbook[open] > summary::before { content: '\25BE\00a0'; }
+details.playbook ol { color: var(--ink2); font-size: 12px; }
 .rail-item {
   display: flex; align-items: center; gap: 9px;
   padding: 6px 14px; cursor: pointer; color: var(--ink2);
@@ -3366,6 +3378,20 @@ UI.MODULES = {};
 UI.HIDDEN = new Set(['stratDetail', 'reportView', 'chart']);
 UI.def = (id, name, ico, group, render) => { UI.MODULES[id] = { id, name, ico, group, render }; };
 
+/* ---------- navigation: the rail, ordered by how a competitor actually works ----------
+   The old rail grouped modules by tool category (Research OS, Quant Toolkit, ...), which is how
+   a developer thinks, not how you run a contest. This orders them by the competition loop instead:
+   the top groups are what you touch daily, and the heavy research engines drop into collapsed
+   groups so the everyday view stays short. Each entry lists module ids in the order they show. */
+UI.NAV = [
+  { g: 'Start Here',       open: true,  mods: ['guide', 'command'] },
+  { g: 'Daily Desk',       open: true,  mods: ['dashboard', 'holdings', 'decision', 'sentiment'] },
+  { g: 'Find Ideas',       open: true,  mods: ['advisor', 'screener', 'peers', 'markets', 'datahub'] },
+  { g: 'Portfolio & Risk', open: true,  mods: ['portfolio', 'risk', 'reports'] },
+  { g: 'Quant Lab',        open: false, mods: ['structure', 'seasonality', 'drawdowns', 'composer', 'strategies', 'ensemble', 'alpha', 'mllab', 'researcher', 'firm'] },
+  { g: 'Learn',            open: false, mods: ['knowledge'] },
+];
+
 /* ---------- tab management ---------- */
 UI.openTab = function (module, state = {}, title) {
   const m = UI.MODULES[module];
@@ -3431,17 +3457,35 @@ UI.stillActive = tab => UI.currentTab() === tab;
 UI.boot = function () {
   AL.boot();
   document.getElementById('app').style.display = '';
-  // rail
-  const groups = {};
-  for (const m of Object.values(UI.MODULES)) if (!UI.HIDDEN.has(m.id)) (groups[m.group] = groups[m.group] || []).push(m);
-  // guide first so newcomers see it before anything intimidating
-  const groupOrder = ['Start Here', 'Research OS', 'Advisory', 'Autonomous Research', 'Quant Toolkit', 'Firm', 'Portfolio & Risk', 'Knowledge'];
-  const ordered = groupOrder.filter(g => groups[g]).map(g => [g, groups[g]])
-    .concat(Object.entries(groups).filter(([g]) => !groupOrder.includes(g)));
-  document.getElementById('rail').innerHTML = ordered.map(([g, mods]) =>
-    `<div class="rail-group"><div class="rail-head">${g}</div>` +
-    mods.map(m => `<div class="rail-item" data-mod="${m.id}"><span class="ico">${m.ico}</span>${m.name}</div>`).join('') + '</div>').join('');
+  // rail: workflow-ordered, collapsible groups (see UI.NAV). Remembers which groups you fold.
+  const placed = new Set();
+  const collapsed = AL.store.get('rail_collapsed', {});   // { groupName: true } means folded
+  const sections = UI.NAV.map(sec => {
+    const mods = sec.mods.map(id => UI.MODULES[id]).filter(m => m && !UI.HIDDEN.has(m.id));
+    mods.forEach(m => placed.add(m.id));
+    return { g: sec.g, open: sec.open, mods };
+  }).filter(sec => sec.mods.length);
+  // safety net: any registered module the NAV forgot still gets shown, so a new module never hides
+  const orphans = Object.values(UI.MODULES).filter(m => !UI.HIDDEN.has(m.id) && !placed.has(m.id));
+  if (orphans.length) sections.push({ g: 'More', open: true, mods: orphans });
+  document.getElementById('rail').innerHTML = sections.map(sec => {
+    const isOpen = collapsed[sec.g] != null ? !collapsed[sec.g] : sec.open;
+    return `<div class="rail-group ${isOpen ? '' : 'collapsed'}" data-group="${AL.fmt.esc(sec.g)}">` +
+      `<div class="rail-head"><span class="caret">${isOpen ? '▾' : '▸'}</span>${AL.fmt.esc(sec.g)}</div>` +
+      `<div class="rail-items">` +
+      sec.mods.map(m => `<div class="rail-item" data-mod="${m.id}"><span class="ico">${m.ico}</span>${AL.fmt.esc(m.name)}</div>`).join('') +
+      `</div></div>`;
+  }).join('');
   document.querySelectorAll('.rail-item').forEach(r => r.addEventListener('click', () => UI.focusModule(r.dataset.mod)));
+  // click a group header to fold it away; the choice sticks across sessions
+  document.querySelectorAll('.rail-group .rail-head').forEach(h => h.addEventListener('click', () => {
+    const grp = h.parentElement;
+    const nowCollapsed = grp.classList.toggle('collapsed');
+    grp.querySelector('.caret').textContent = nowCollapsed ? '▸' : '▾';
+    const store = AL.store.get('rail_collapsed', {});
+    store[grp.dataset.group] = nowCollapsed;
+    AL.store.set('rail_collapsed', store);
+  }));
   // topbar info
   document.getElementById('asof').innerHTML = `DATA AS-OF <b>${AL.asof}</b>`;
   setInterval(() => { document.getElementById('clock').textContent = new Date().toTimeString().slice(0, 8); }, 1000);
@@ -6806,12 +6850,57 @@ UI.isLargeCap = function (r) {
   return (sp && sp.cols[r.sym]) || (r.mc && r.mc > 5000);   // S&P member, or a > $5B extended name
 };
 
-/* Compare the live book to a saved target and produce concrete, dated orders. */
+// Fuse every engine's read on ONE symbol into a single signed conviction plus plain-English
+// reasons. This is the core of the "use all the other tabs" briefing: the Decision engine, the
+// Advisor's factor score, and the alt-data Sentiment desk each vote on the same [-1, +1] scale,
+// and conviction is just their average, so agreement pushes it to the extremes and disagreement
+// cancels toward zero. Honest by construction: a name only earns a strong call when several
+// independent engines point the same way. Returns null for instruments no engine covers (index
+// ETFs, bonds, gold, crypto), which is correct: those are structural sleeves, not stock bets.
+UI.symConviction = function (sym, scored) {
+  const f = AL.fmt;
+  let dec = null; try { dec = UI.decision(sym); } catch (e) { }
+  const srow = scored && scored.bySym ? scored.bySym[sym] : null;
+  const score = srow ? srow.score : null;
+  let alt = null; try { alt = UI.altSignals ? UI.altSignals(sym) : null; } catch (e) { }
+  const axes = [];   // each engine's vote, normalized so its own "strong" reading is about +/-1
+  const why = [];    // one plain sentence per engine that actually had a view
+  if (dec && dec.coverage > 0) {
+    axes.push(Math.max(-1, Math.min(1, dec.overall / 0.4)));   // BUY/SELL trip at +/-0.22, so /0.4 keeps a solid call near 1
+    why.push(`Decision engine: ${dec.call} (${dec.overall >= 0 ? '+' : ''}${dec.overall.toFixed(2)})`);
+  }
+  if (score != null) {
+    axes.push(Math.max(-1, Math.min(1, score / 0.6)));         // advisor: ~0.6 is a strong factor score
+    why.push(`Advisor factor score ${score >= 0 ? '+' : ''}${score.toFixed(2)}`);
+  }
+  if (alt) {
+    const parts = [];
+    if (alt.bullRatio != null) parts.push((alt.bullRatio - 0.5) * 2);
+    if (alt.toneTrend != null) parts.push(Math.max(-1, Math.min(1, alt.toneTrend)));
+    if (parts.length) {
+      axes.push(Math.max(-1, Math.min(1, Q.mean(parts))));
+      const bits = [];
+      if (alt.bullRatio != null) bits.push(`${Math.round(alt.bullRatio * 100)}% of social chatter bullish`);
+      if (alt.toneTrend != null) bits.push(alt.toneTrend > 0.05 ? 'news tone improving' : alt.toneTrend < -0.05 ? 'news tone worsening' : 'news tone flat');
+      if (alt.newsSpike != null && alt.newsSpike > 0.6) bits.push('news coverage spiking');
+      if (bits.length) why.push('Sentiment: ' + bits.join(', '));
+    }
+  }
+  if (!axes.length) return null;
+  const conviction = Q.mean(axes);
+  // how many engines actually agree with the net call, for an honest "3 of 3 engines agree" line
+  const agree = axes.filter(a => a !== 0 && Math.sign(a) === Math.sign(conviction)).length;
+  return { sym, dec, score, alt, conviction, agree, nEngines: axes.length, why };
+};
+
+/* Compare the live book to a saved target and produce concrete, dated orders, then rank the
+   best moves by fusing the Decision engine, Advisor, Sentiment desk, regime model and a
+   concentration check. It surfaces where the most engines agree; it does not promise profit. */
 UI.dailyBriefing = function (target) {
   const f = AL.fmt;
   const book = AL.store.get('holdings', UI.DEMO_BOOK);
   const cash = AL.store.get('cash', null);
-  const rows = book.map(h => { const s = AL.getSeries(h.sym); return s ? { sym: h.sym, mv: h.qty * s.values[s.values.length - 1], price: s.values[s.values.length - 1] } : null; }).filter(Boolean);
+  const rows = book.map(h => { const s = AL.getSeries(h.sym); return s ? { sym: h.sym, name: s.name, mv: h.qty * s.values[s.values.length - 1], price: s.values[s.values.length - 1] } : null; }).filter(Boolean);
   const bookMV = Q.sum(rows.map(r => r.mv));
   const capital = target.capital || (bookMV + (cash || 0)) || 100000;
   const curW = {}; rows.forEach(r => curW[r.sym] = r.mv / (capital || 1));
@@ -6819,6 +6908,14 @@ UI.dailyBriefing = function (target) {
   const syms = Array.from(new Set([...Object.keys(curW), ...Object.keys(tgtW)]));
   // only surface a trade when the drift is material: over-trading bleeds edge in a contest
   const minDollar = Math.max(capital * 0.02, 500);
+
+  // score the whole universe once (session-cached), then memoize the per-name fusion so a symbol
+  // that is both an order and a holding is only run through the engines a single time
+  let scored = null; try { scored = UI.scoreStocks(); } catch (e) { }
+  const sigCache = {};
+  const sig = sym => (sym in sigCache) ? sigCache[sym] : (sigCache[sym] = UI.symConviction(sym, scored));
+
+  // 1. drift-driven rebalance orders, now annotated with each name's fused signal
   const orders = [];
   syms.forEach(sym => {
     const ser = AL.getSeries(sym); if (!ser) return;
@@ -6829,21 +6926,54 @@ UI.dailyBriefing = function (target) {
     const shares = ser.cls === 'Crypto' ? Math.round(dollars / price * 1e4) / 1e4 : Math.round(dollars / price);
     if (!shares) return;
     const th = target.holdings.find(h => h.sym === sym);
+    const s = sig(sym);
     orders.push({ sym, side: dollars > 0 ? 'BUY' : 'SELL', shares: Math.abs(shares), dollars: Math.abs(dollars), price,
-      role: th ? th.role : 'not in target — exit', name: ser.name });
+      role: th ? th.role : 'not in target, exit', name: ser.name,
+      call: s && s.dec ? s.dec.call : null, conviction: s ? s.conviction : null });
   });
   orders.sort((a, b) => b.dollars - a.dollars);
-  const maxDrift = syms.reduce((m, s) => Math.max(m, Math.abs((tgtW[s] || 0) - (curW[s] || 0))), 0);
-  // watch list: holdings the advisor has soured on, and strong buys you do not yet own
-  let scored = null; try { scored = UI.scoreStocks(); } catch (e) { }
-  const trim = [], adders = [];
+  const maxDrift = syms.reduce((m, s2) => Math.max(m, Math.abs((tgtW[s2] || 0) - (curW[s2] || 0))), 0);
+
+  // 2. PROTECT: holdings the engines have turned against. This leads the briefing because not
+  // losing money is worth as much as making it, and these are the highest-conviction defensive
+  // moves. Fires only on names an engine actually covers, so index/bond sleeves never flag here.
+  const protect = [];
+  rows.forEach(r => {
+    const s = sig(r.sym); if (!s) return;
+    const isSell = s.dec && s.dec.call === 'SELL';
+    if (isSell || s.conviction < -0.30) {
+      protect.push({ sym: r.sym, name: r.name, weight: r.mv / (bookMV || 1), mv: r.mv,
+        conviction: s.conviction, agree: s.agree, nEngines: s.nEngines, why: s.why,
+        action: isSell ? 'SELL' : 'TRIM' });
+    }
+  });
+  protect.sort((a, b) => a.conviction - b.conviction);   // most negative (strongest sell) first
+
+  // 3. OPPORTUNITIES: strong-conviction names you do not own yet, where several engines agree.
+  // Scan the advisor's best large-caps, then keep only those the fusion also rates highly and the
+  // decision engine does not reject. Ranked by conviction so the top ideas surface first.
+  const opportunities = [];
   if (scored) {
-    rows.forEach(r => { const s = scored.bySym[r.sym]; if (s && s.score < -0.25) trim.push(s); });
-    scored.rows.filter(r => UI.isLargeCap(r) && r.score > 0.4 && !curW[r.sym]).slice(0, 4).forEach(r => adders.push(r));
+    scored.rows.filter(r => UI.isLargeCap(r) && r.score > 0.35 && !curW[r.sym]).slice(0, 12).forEach(r => {
+      const s = sig(r.sym);
+      if (s && s.conviction > 0.30 && !(s.dec && s.dec.call === 'SELL')) {
+        opportunities.push({ sym: r.sym, name: r.name, sector: r.sector,
+          conviction: s.conviction, agree: s.agree, nEngines: s.nEngines, why: s.why });
+      }
+    });
+    opportunities.sort((a, b) => b.conviction - a.conviction);
   }
+  const topOpportunities = opportunities.slice(0, 4);
+
+  // 4. concentration risk: any single position that has grown past a quarter of the live book.
+  // The core index ETF can legitimately sit near 20%, so 25% is the honest "too big to ignore" line.
+  const risks = [];
+  rows.forEach(r => { const w = r.mv / (bookMV || 1); if (w > 0.25) risks.push({ sym: r.sym, name: r.name, weight: w }); });
+  risks.sort((a, b) => b.weight - a.weight);
+
   const regimeNow = Q.marketRegime();
   return { orders, maxDrift, capital, bookMV, cash, regimeNow, regimeChanged: regimeNow.label !== target.regimeLabel,
-    trim, adders, onTarget: maxDrift < 0.03 };
+    protect, opportunities: topOpportunities, risks, onTarget: maxDrift < 0.03 };
 };
 
 /* =========================================================
@@ -6869,6 +6999,16 @@ UI.def('command', 'Competition Center', '◎', 'Start Here', function (el, state
       ${cashMode != null ? '<span class="badge info">COMPETITION MODE</span>' : ''}
     </div>
     <div class="info-box" style="margin-bottom:12px">Set your starting amount, pick a risk level, and Competition Center builds a full <b>multi-asset battle plan</b>: US and international stocks, bonds, commodities, gold, real estate and crypto, with the exact number of shares to buy. Then the <b>daily briefing</b> tells you what to trade to stay on plan. Everything is computed from real prices and the same engines as the rest of AlphaLab. It never trades for you.</div>
+    <details class="playbook" style="margin-bottom:12px">
+      <summary>How to run your competition month, step by step</summary>
+      <ol style="margin:8px 0 0;padding-left:18px;line-height:1.85">
+        <li><b>Day one, set up.</b> Enter your starting capital and pick a risk level above, press Build my plan, review the target portfolio, then press Start competition book and build. Place those exact trades in your real contest account and open My Holdings to track them.</li>
+        <li><b>Every trading day, about five minutes.</b> Come back here, switch to Daily briefing, read the action plan, place any orders it lists, and check whether the regime banner says it changed.</li>
+        <li><b>Once a week, twenty to thirty minutes.</b> Press Build my plan again so the tilt matches the latest regime, then check Stock Advisor and Buy / Sell Decision on your names, skim Sentiment and News for your holdings, and open Risk Lab so no single position gets too large.</li>
+        <li><b>Before you present.</b> Open Reports and Write the strategy report to document your process, and use Peer Comparison plus the Decision engine bull and bear cases to defend every pick to the judges.</li>
+        <li><b>Rules first.</b> Check your contest rules for which assets are allowed. If it is US stocks only, skip the crypto, international and commodity ETFs and lean the plan toward the single stocks and bonds.</li>
+      </ol>
+    </details>
     <div class="controls" style="margin-bottom:6px">
       <label class="lbl">starting capital</label>
       <input class="inp" id="cc-cap" type="number" min="1000" step="1000" value="${Math.round(capital)}" ${cashMode != null ? 'disabled title="using your live competition book value"' : ''} style="width:130px">
@@ -6945,26 +7085,52 @@ UI.def('command', 'Competition Center', '◎', 'Start Here', function (el, state
   function renderDaily(body, t) {
     const b = UI.dailyBriefing(t);
     const dateline = new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
+    // strength label from |conviction|; the number is the average across the engines that voted
+    const convLevel = c => { const a = Math.abs(c || 0); return a >= 0.55 ? 'High' : a >= 0.32 ? 'Medium' : 'Low'; };
+    const agreeLine = m => `${m.agree} of ${m.nEngines} engine${m.nEngines > 1 ? 's' : ''} agree`;
+    // one reasoned row in the "best moves" feed
+    const moveRow = (m, badgeClass, actionText) => `
+      <div style="display:flex;gap:10px;align-items:flex-start;padding:9px 0;border-top:1px solid var(--line)">
+        <span class="badge ${badgeClass}" style="margin-top:1px;min-width:52px;text-align:center">${actionText}</span>
+        <div style="min-width:0;flex:1">
+          <div><span class="sym">${m.sym}</span> <span class="note">${f.esc(m.name || '')}</span></div>
+          <div class="note" style="margin-top:2px;line-height:1.6">${m.why.join(' &middot; ')}</div>
+        </div>
+        <div style="text-align:right;white-space:nowrap"><span class="chip ${m.conviction >= 0 ? 'on' : ''}">${convLevel(m.conviction)} conviction</span><div class="note" style="margin-top:2px">${agreeLine(m)}</div></div>
+      </div>`;
+
+    // ranked best-moves feed: defend first (SELL/TRIM), then the strongest new ideas (BUY)
+    const bestRows = b.protect.map(m => moveRow(m, m.action === 'SELL' ? 'bad' : 'warn', m.action))
+      .concat(b.opportunities.map(m => moveRow(m, 'ok', 'BUY')));
+    const bestPanel = UI.panel('Best moves today, where the most engines agree',
+      bestRows.length
+        ? `<div class="note" style="margin-bottom:2px">Each move fuses the Buy / Sell Decision engine, the Stock Advisor factor score and the Sentiment desk. Higher conviction means more of them point the same way. Conviction is not certainty, so open the Decision engine on any name before you act.</div>${bestRows.join('')}`
+        : '<div class="empty">No single-name signal is strong enough to flag today. Follow the rebalance orders below to stay on plan and check back tomorrow.</div>');
+
+    // narrative action plan that stitches the synthesis together
     const plan = [];
     if (b.regimeChanged) plan.push(`Regime shifted to <b>${b.regimeNow.label}</b> since you built this plan (was ${t.regimeLabel}). Rebuild the plan to re-tilt your buckets.`);
-    if (b.onTarget && !b.orders.length) plan.push('Your book is on target. Hold, no trades needed today.');
-    else if (b.orders.length) plan.push(`Place ${b.orders.length} order${b.orders.length > 1 ? 's' : ''} below to steer toward your plan (drift at the extreme is ${f.pct(b.maxDrift, 1)}).`);
-    b.trim.forEach(s => plan.push(`Reconsider <b>${s.sym}</b>: the advisor score has fallen to ${f.n(s.score)}. Consider trimming or exiting.`));
-    if (b.adders.length) plan.push(`Fresh strong-buy candidates not in your book: ${b.adders.map(a => a.sym).join(', ')}. Check them in the Decision engine before adding.`);
+    if (b.protect.length) plan.push(`Protect capital first: ${b.protect.map(p => `<b>${p.sym}</b> (${p.action.toLowerCase()})`).join(', ')}. The engines have turned against ${b.protect.length > 1 ? 'these' : 'this'}.`);
+    if (b.onTarget && !b.orders.length) plan.push('Your book is on target. Hold, no rebalancing trades needed today.');
+    else if (b.orders.length) plan.push(`Place the ${b.orders.length} rebalance order${b.orders.length > 1 ? 's' : ''} below to steer toward your plan (drift at the extreme is ${f.pct(b.maxDrift, 1)}).`);
+    if (b.opportunities.length) plan.push(`Highest-conviction ideas not in your book: ${b.opportunities.map(a => `<b>${a.sym}</b>`).join(', ')}. Confirm each in the Decision engine before adding.`);
+    if (b.risks.length) plan.push(`Concentration watch: ${b.risks.map(r => `<b>${r.sym}</b> is ${f.pct(r.weight, 0)} of the book`).join('; ')}. A single position this large drives most of your risk, consider trimming it into the plan.`);
     plan.push('Re-open this briefing each trading day; it recomputes on the latest close and after every data refresh.');
+
     body.innerHTML = `
       <div class="tiles" style="margin-bottom:12px">
         <div class="tile"><div class="t-label">Today</div><div class="t-value" style="font-size:14px">${dateline}</div><div class="t-delta note">close of ${AL.asof}</div></div>
         <div class="tile"><div class="t-label">Book value</div><div class="t-value">${f.usd(b.bookMV + (b.cash || 0))}</div><div class="t-delta note">${b.cash != null ? f.usd(b.cash) + ' cash' : 'tracking only'}</div></div>
         <div class="tile"><div class="t-label">Drift from plan</div><div class="t-value ${b.onTarget ? 'up' : 'dn'}">${f.pct(b.maxDrift, 1)}</div><div class="t-delta note">${b.onTarget ? 'on target' : 'rebalance'}</div></div>
-        <div class="tile"><div class="t-label">Orders today</div><div class="t-value">${b.orders.length}</div></div>
+        <div class="tile"><div class="t-label">Protect / add</div><div class="t-value">${b.protect.length} / ${b.opportunities.length}</div><div class="t-delta note">high-conviction moves</div></div>
         <div class="tile"><div class="t-label">Regime</div><div class="t-value" style="font-size:14px">${b.regimeNow.label}</div>${b.regimeChanged ? '<div class="t-delta dn">changed</div>' : ''}</div>
       </div>
-      ${UI.panel('Today\'s action plan', `<ol style="margin:0;padding-left:18px;line-height:1.9">${plan.map(p => `<li>${p}</li>`).join('')}</ol>`)}
-      <div style="margin-top:12px">${UI.panel(`Orders to place ${cashMode != null ? '<span class="badge dim">one click books them all</span>' : ''}`, b.orders.length ? `<table class="tbl"><thead><tr><th>Action</th><th>Ticker</th><th>What it is</th><th class="r">Shares</th><th class="r">~$</th><th class="r">Price</th></tr></thead><tbody>` +
-        b.orders.map(o => `<tr><td><span class="badge ${o.side === 'BUY' ? 'ok' : 'bad'}">${o.side}</span></td><td class="sym">${o.sym}</td><td class="t">${f.esc(o.role)}</td><td class="r"><b>${o.shares}</b></td><td class="r">${f.usd(o.dollars)}</td><td class="r">${f.px(o.price)}</td></tr>`).join('') +
+      ${bestPanel}
+      <div style="margin-top:12px">${UI.panel('Today\'s action plan', `<ol style="margin:0;padding-left:18px;line-height:1.9">${plan.map(p => `<li>${p}</li>`).join('')}</ol>`)}</div>
+      <div style="margin-top:12px">${UI.panel(`Rebalance orders ${cashMode != null ? '<span class="badge dim">one click books them all</span>' : ''}`, b.orders.length ? `<table class="tbl"><thead><tr><th>Action</th><th>Ticker</th><th>What it is</th><th class="r">Shares</th><th class="r">~$</th><th class="r">Price</th><th class="r">Signal</th></tr></thead><tbody>` +
+        b.orders.map(o => `<tr><td><span class="badge ${o.side === 'BUY' ? 'ok' : 'bad'}">${o.side}</span></td><td class="sym">${o.sym}</td><td class="t">${f.esc(o.role)}</td><td class="r"><b>${o.shares}</b></td><td class="r">${f.usd(o.dollars)}</td><td class="r">${f.px(o.price)}</td><td class="r">${o.call ? `<span class="badge ${o.call === 'BUY' ? 'ok' : o.call === 'SELL' ? 'bad' : 'warn'}">${o.call}</span>` : '<span class="note">-</span>'}</td></tr>`).join('') +
         `</tbody></table>${cashMode != null ? '<button class="btn primary" id="cc-exec" style="margin-top:10px">Execute all orders in my book</button>' : '<div class="note" style="margin-top:8px">Turn on competition mode (My Holdings) to book these with one click.</div>'}` : '<div class="empty">No trades needed, your book matches the plan.</div>', { nopad: b.orders.length > 0 })}</div>
-      <div class="warn-box" style="margin-top:12px">Orders are suggestions from your saved plan versus your live book. Nothing executes until you press the button. Research, not advice.</div>`;
+      <div class="warn-box" style="margin-top:12px">This briefing fuses every engine in AlphaLab, but conviction is not a promise. No tool can guarantee you gain the most money or win the contest. Orders compare your saved plan to your live book and nothing executes until you press the button. Research, not advice, and verify contest rules before trading.</div>`;
     const ex = document.getElementById('cc-exec');
     if (ex) ex.addEventListener('click', () => execOrders(b, t));
   }

@@ -8,6 +8,20 @@ UI.MODULES = {};
 UI.HIDDEN = new Set(['stratDetail', 'reportView', 'chart']);
 UI.def = (id, name, ico, group, render) => { UI.MODULES[id] = { id, name, ico, group, render }; };
 
+/* ---------- navigation: the rail, ordered by how a competitor actually works ----------
+   The old rail grouped modules by tool category (Research OS, Quant Toolkit, ...), which is how
+   a developer thinks, not how you run a contest. This orders them by the competition loop instead:
+   the top groups are what you touch daily, and the heavy research engines drop into collapsed
+   groups so the everyday view stays short. Each entry lists module ids in the order they show. */
+UI.NAV = [
+  { g: 'Start Here',       open: true,  mods: ['guide', 'command'] },
+  { g: 'Daily Desk',       open: true,  mods: ['dashboard', 'holdings', 'decision', 'sentiment'] },
+  { g: 'Find Ideas',       open: true,  mods: ['advisor', 'screener', 'peers', 'markets', 'datahub'] },
+  { g: 'Portfolio & Risk', open: true,  mods: ['portfolio', 'risk', 'reports'] },
+  { g: 'Quant Lab',        open: false, mods: ['structure', 'seasonality', 'drawdowns', 'composer', 'strategies', 'ensemble', 'alpha', 'mllab', 'researcher', 'firm'] },
+  { g: 'Learn',            open: false, mods: ['knowledge'] },
+];
+
 /* ---------- tab management ---------- */
 UI.openTab = function (module, state = {}, title) {
   const m = UI.MODULES[module];
@@ -73,17 +87,35 @@ UI.stillActive = tab => UI.currentTab() === tab;
 UI.boot = function () {
   AL.boot();
   document.getElementById('app').style.display = '';
-  // rail
-  const groups = {};
-  for (const m of Object.values(UI.MODULES)) if (!UI.HIDDEN.has(m.id)) (groups[m.group] = groups[m.group] || []).push(m);
-  // guide first so newcomers see it before anything intimidating
-  const groupOrder = ['Start Here', 'Research OS', 'Advisory', 'Autonomous Research', 'Quant Toolkit', 'Firm', 'Portfolio & Risk', 'Knowledge'];
-  const ordered = groupOrder.filter(g => groups[g]).map(g => [g, groups[g]])
-    .concat(Object.entries(groups).filter(([g]) => !groupOrder.includes(g)));
-  document.getElementById('rail').innerHTML = ordered.map(([g, mods]) =>
-    `<div class="rail-group"><div class="rail-head">${g}</div>` +
-    mods.map(m => `<div class="rail-item" data-mod="${m.id}"><span class="ico">${m.ico}</span>${m.name}</div>`).join('') + '</div>').join('');
+  // rail: workflow-ordered, collapsible groups (see UI.NAV). Remembers which groups you fold.
+  const placed = new Set();
+  const collapsed = AL.store.get('rail_collapsed', {});   // { groupName: true } means folded
+  const sections = UI.NAV.map(sec => {
+    const mods = sec.mods.map(id => UI.MODULES[id]).filter(m => m && !UI.HIDDEN.has(m.id));
+    mods.forEach(m => placed.add(m.id));
+    return { g: sec.g, open: sec.open, mods };
+  }).filter(sec => sec.mods.length);
+  // safety net: any registered module the NAV forgot still gets shown, so a new module never hides
+  const orphans = Object.values(UI.MODULES).filter(m => !UI.HIDDEN.has(m.id) && !placed.has(m.id));
+  if (orphans.length) sections.push({ g: 'More', open: true, mods: orphans });
+  document.getElementById('rail').innerHTML = sections.map(sec => {
+    const isOpen = collapsed[sec.g] != null ? !collapsed[sec.g] : sec.open;
+    return `<div class="rail-group ${isOpen ? '' : 'collapsed'}" data-group="${AL.fmt.esc(sec.g)}">` +
+      `<div class="rail-head"><span class="caret">${isOpen ? '▾' : '▸'}</span>${AL.fmt.esc(sec.g)}</div>` +
+      `<div class="rail-items">` +
+      sec.mods.map(m => `<div class="rail-item" data-mod="${m.id}"><span class="ico">${m.ico}</span>${AL.fmt.esc(m.name)}</div>`).join('') +
+      `</div></div>`;
+  }).join('');
   document.querySelectorAll('.rail-item').forEach(r => r.addEventListener('click', () => UI.focusModule(r.dataset.mod)));
+  // click a group header to fold it away; the choice sticks across sessions
+  document.querySelectorAll('.rail-group .rail-head').forEach(h => h.addEventListener('click', () => {
+    const grp = h.parentElement;
+    const nowCollapsed = grp.classList.toggle('collapsed');
+    grp.querySelector('.caret').textContent = nowCollapsed ? '▸' : '▾';
+    const store = AL.store.get('rail_collapsed', {});
+    store[grp.dataset.group] = nowCollapsed;
+    AL.store.set('rail_collapsed', store);
+  }));
   // topbar info
   document.getElementById('asof').innerHTML = `DATA AS-OF <b>${AL.asof}</b>`;
   setInterval(() => { document.getElementById('clock').textContent = new Date().toTimeString().slice(0, 8); }, 1000);

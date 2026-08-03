@@ -82,8 +82,20 @@ b.up, b.dn { font-family: var(--mono); }
 .rail-group { margin-bottom: 12px; }
 .rail-head {
   font-size: 9px; letter-spacing: 1.5px; text-transform: uppercase; color: var(--muted);
-  padding: 4px 14px;
+  padding: 4px 14px; cursor: pointer; user-select: none;
+  display: flex; align-items: center; gap: 6px;
 }
+.rail-head:hover { color: var(--ink2); }
+.rail-head .caret { font-size: 8px; width: 8px; opacity: 0.7; }
+.rail-group.collapsed .rail-items { display: none; }
+
+/* a fold-away help block (used for the competition playbook) */
+details.playbook { border: 1px solid var(--line); border-radius: 6px; padding: 8px 12px; background: var(--surf); }
+details.playbook > summary { cursor: pointer; color: var(--accent); font-size: 12px; font-weight: 600; list-style: none; }
+details.playbook > summary::-webkit-details-marker { display: none; }
+details.playbook > summary::before { content: '\25B8\00a0'; }
+details.playbook[open] > summary::before { content: '\25BE\00a0'; }
+details.playbook ol { color: var(--ink2); font-size: 12px; }
 .rail-item {
   display: flex; align-items: center; gap: 9px;
   padding: 6px 14px; cursor: pointer; color: var(--ink2);
