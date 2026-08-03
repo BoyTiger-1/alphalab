@@ -126,16 +126,17 @@ UI.def('holdings', 'My Holdings', '❖', 'Portfolio & Risk', function (el, state
   const rows = pf.map(h => {
     const ser = AL.getSeries(h.sym);
     if (!ser) return null;
-    const last = ser.values[ser.values.length - 1];
+    const last = AL.livePx(h.sym);   // live tick if the poller has one, otherwise the last real close
     const mv = h.qty * last;
     return { ...h, name: ser.name, cls: ser.cls, last, mv, pnl: mv - h.qty * h.costBasis, pnlPct: last / h.costBasis - 1 };
   }).filter(Boolean);
+  const anyLive = rows.some(r => AL.live && AL.live.px[r.sym] != null);   // did any position get a live price
   const totMV = Q.sum(rows.map(r => r.mv));
   const totPnl = Q.sum(rows.map(r => r.pnl));
   const totBook = totMV + (cash || 0);
   el.innerHTML = `
     <div class="section-title">Personal Portfolio Monitor
-      <span class="badge dim">valued at real ${AL.asof} closes</span>
+      <span class="badge dim">${anyLive ? 'live prices where available, else ' + AL.asof + ' closes' : 'valued at real ' + AL.asof + ' closes'}</span>
       ${cash != null ? '<span class="badge info">WHARTON MODE</span>' : ''}
       <span style="flex:1"></span>
       <button class="btn" id="h-wharton">Competition mode ($100K)</button>

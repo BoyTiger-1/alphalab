@@ -171,6 +171,80 @@ AL.lastClose = function (sym) {
   const v = s.values, n = v.length;
   return { last: v[n - 1], prev: v[n - 2], chg: v[n - 1] / v[n - 2] - 1, date: s.dates[n - 1] };
 };
+// the raw EOD last close, no live overlay (used to compute a live % change without recursion)
+AL.lastCloseRaw = function (sym) { const s = AL.getSeries(sym); return s ? s.values[s.values.length - 1] : null; };
+
+/* ---------- live prices (opt-in, real sources only) ----------
+   The bundled series are end-of-day. This layer lets a few DISPLAY surfaces (the tape, My Holdings,
+   the competition book value) tick during the day from REAL live sources, without ever touching the
+   historical analytics, which must stay on clean EOD bars. Two sources, chosen by what a static page
+   can actually reach from a browser:
+     - crypto: Coinbase's public ticker is CORS-open and keyless, so BTC / ETH tick 24/7 for free.
+     - US stocks / ETFs: no free keyless source allows browser calls (Yahoo blocks CORS), so these go
+       live only if the user pastes their own free Finnhub API key, kept in localStorage and never
+       committed. Without a key, equities simply stay at the last close, clearly labeled EOD. */
+AL.live = {
+  px: {}, chg: {},          // sym -> latest live price / % change vs prior close
+  ts: 0, timer: null, running: false,
+  key() { return AL.store.get('live_finnhub_key', null); },
+  setKey(k) { k ? AL.store.set('live_finnhub_key', k) : AL.store.del('live_finnhub_key'); },
+
+  _cryptoSyms() { return Object.keys((AL.D && AL.D.crypto) || {}); },   // bundle ids match Coinbase products (BTC-USD ...)
+  async _fetchCrypto() {
+    await Promise.all(this._cryptoSyms().map(async sym => {
+      try {
+        const r = await fetch(`https://api.exchange.coinbase.com/products/${sym}/ticker`, { cache: 'no-store' });
+        if (!r.ok) return;
+        const p = parseFloat((await r.json()).price);
+        if (p > 0) { this.px[sym] = p; const lc = AL.lastCloseRaw(sym); if (lc) this.chg[sym] = p / lc - 1; }
+      } catch (e) { /* transient, keep the last good tick */ }
+    }));
+  },
+
+  // live-eligible equities: the tape's US stocks/ETFs plus current holdings, minus FX/futures/indices
+  // Finnhub's free tier does not serve. Keeps us well under the free 60-calls/minute ceiling.
+  _equitySyms() {
+    const tape = ['SPY', 'QQQ', 'IWM', 'TLT', 'GLD', 'NVDA', 'AAPL', 'MSFT', 'HYG', 'EEM'];
+    const held = (AL.store.get('holdings', []) || []).map(h => h.sym);
+    return Array.from(new Set([...tape, ...held]))
+      .filter(s => !/[=^]/.test(s) && AL.getSeries(s) && AL.getSeries(s).cls !== 'Crypto');
+  },
+  _marketOpen() {
+    const d = new Date(), day = d.getUTCDay();
+    if (day < 1 || day > 5) return false;                          // weekends: US equities closed
+    const mins = d.getUTCHours() * 60 + d.getUTCMinutes();
+    return mins >= 13 * 60 + 30 && mins <= 20 * 60 + 5;            // ~09:30-16:00 ET in UTC (ignores DST +/-1h)
+  },
+  async _fetchEquities() {
+    const key = this.key();
+    if (!key || !this._marketOpen()) return;                       // no key or market shut: leave equities at EOD
+    for (const sym of this._equitySyms()) {
+      try {
+        const r = await fetch(`https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(sym)}&token=${encodeURIComponent(key)}`, { cache: 'no-store' });
+        if (!r.ok) continue;
+        const j = await r.json();
+        if (j && j.c > 0) { this.px[sym] = j.c; this.chg[sym] = (j.dp != null ? j.dp / 100 : (j.pc ? j.c / j.pc - 1 : 0)); }
+      } catch (e) { /* keep last */ }
+    }
+  },
+  async poll() {
+    try { await Promise.all([this._fetchCrypto(), this._fetchEquities()]); } catch (e) { }
+    this.ts = Date.now();
+    AL.bus.emit('live:update', { ts: this.ts });
+  },
+  start() {
+    if (this.running || typeof fetch !== 'function') return;       // no-op in the Node test harness
+    this.running = true;
+    this.poll();                                                   // fetch once now so it is live within seconds
+    this.timer = setInterval(() => { if (!document.hidden) this.poll(); }, 60000);   // then every minute
+    document.addEventListener('visibilitychange', () => { if (!document.hidden && this.running) this.poll(); });
+  },
+  stop() { this.running = false; if (this.timer) clearInterval(this.timer); this.timer = null; },
+};
+// freshest price for DISPLAY / VALUATION only: a live tick if we have one, else the last EOD close.
+// Analytics and backtests never call this; they read the EOD series directly.
+AL.livePx = function (sym) { const p = AL.live.px[sym]; return (p != null && p > 0) ? p : AL.lastCloseRaw(sym); };
+AL.liveChg = function (sym) { const c = AL.live.chg[sym]; if (c != null) return c; const lc = AL.lastClose(sym); return lc ? lc.chg : 0; };
 
 AL.window = function (series, from, to) {
   const { dates, values } = series;

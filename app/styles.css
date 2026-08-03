@@ -72,6 +72,11 @@ b.up, b.dn { font-family: var(--mono); }
 .led { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 5px; vertical-align: 1px; }
 .led.on { background: var(--good); box-shadow: 0 0 6px #0ca30c88; }
 .led.idle { background: var(--warn); }
+@keyframes livepulse { 0%,100% { opacity: 1; } 50% { opacity: .45; } }
+#live-led.on { animation: livepulse 2s ease-in-out infinite; }
+.live-badge { cursor: pointer; user-select: none; }
+.live-badge:hover #live-txt { color: var(--ink); }
+#tape .tk-live { color: var(--good); font-size: 8px; margin-left: 4px; vertical-align: 1px; }
 #clock { font-family: var(--mono); font-size: 12px; color: var(--accent); min-width: 66px; text-align: right; }
 
 /* left rail */

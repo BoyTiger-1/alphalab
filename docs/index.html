@@ -1,3 +1,4 @@
+<meta charset="utf-8">
 <title>AlphaLab — Quant Research OS</title>
 <style>
 /* AlphaLab — institutional dark terminal theme */
@@ -74,6 +75,11 @@ b.up, b.dn { font-family: var(--mono); }
 .led { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 5px; vertical-align: 1px; }
 .led.on { background: var(--good); box-shadow: 0 0 6px #0ca30c88; }
 .led.idle { background: var(--warn); }
+@keyframes livepulse { 0%,100% { opacity: 1; } 50% { opacity: .45; } }
+#live-led.on { animation: livepulse 2s ease-in-out infinite; }
+.live-badge { cursor: pointer; user-select: none; }
+.live-badge:hover #live-txt { color: var(--ink); }
+#tape .tk-live { color: var(--good); font-size: 8px; margin-left: 4px; vertical-align: 1px; }
 #clock { font-family: var(--mono); font-size: 12px; color: var(--accent); min-width: 66px; text-align: right; }
 
 /* left rail */
@@ -354,6 +360,7 @@ h3.sub { font-size: 11px; text-transform: uppercase; letter-spacing: 1.2px; colo
     <div id="cmdwrap"><input id="cmd" placeholder="terminal — try: CHART NVDA · BT S001 · STRESS COVID · Ctrl+K" autocomplete="off" spellcheck="false"></div>
     <div class="spacer"></div>
     <span class="stat" id="asof"></span>
+    <span class="stat live-badge" id="live-badge" title="live prices"><span class="led idle" id="live-led"></span><span id="live-txt">EOD</span></span>
     <span class="stat"><span class="led idle" id="res-led"></span><span id="res-stat">researcher idle</span></span>
     <span id="clock"></span>
   </div>
@@ -557,6 +564,80 @@ AL.lastClose = function (sym) {
   const v = s.values, n = v.length;
   return { last: v[n - 1], prev: v[n - 2], chg: v[n - 1] / v[n - 2] - 1, date: s.dates[n - 1] };
 };
+// the raw EOD last close, no live overlay (used to compute a live % change without recursion)
+AL.lastCloseRaw = function (sym) { const s = AL.getSeries(sym); return s ? s.values[s.values.length - 1] : null; };
+
+/* ---------- live prices (opt-in, real sources only) ----------
+   The bundled series are end-of-day. This layer lets a few DISPLAY surfaces (the tape, My Holdings,
+   the competition book value) tick during the day from REAL live sources, without ever touching the
+   historical analytics, which must stay on clean EOD bars. Two sources, chosen by what a static page
+   can actually reach from a browser:
+     - crypto: Coinbase's public ticker is CORS-open and keyless, so BTC / ETH tick 24/7 for free.
+     - US stocks / ETFs: no free keyless source allows browser calls (Yahoo blocks CORS), so these go
+       live only if the user pastes their own free Finnhub API key, kept in localStorage and never
+       committed. Without a key, equities simply stay at the last close, clearly labeled EOD. */
+AL.live = {
+  px: {}, chg: {},          // sym -> latest live price / % change vs prior close
+  ts: 0, timer: null, running: false,
+  key() { return AL.store.get('live_finnhub_key', null); },
+  setKey(k) { k ? AL.store.set('live_finnhub_key', k) : AL.store.del('live_finnhub_key'); },
+
+  _cryptoSyms() { return Object.keys((AL.D && AL.D.crypto) || {}); },   // bundle ids match Coinbase products (BTC-USD ...)
+  async _fetchCrypto() {
+    await Promise.all(this._cryptoSyms().map(async sym => {
+      try {
+        const r = await fetch(`https://api.exchange.coinbase.com/products/${sym}/ticker`, { cache: 'no-store' });
+        if (!r.ok) return;
+        const p = parseFloat((await r.json()).price);
+        if (p > 0) { this.px[sym] = p; const lc = AL.lastCloseRaw(sym); if (lc) this.chg[sym] = p / lc - 1; }
+      } catch (e) { /* transient, keep the last good tick */ }
+    }));
+  },
+
+  // live-eligible equities: the tape's US stocks/ETFs plus current holdings, minus FX/futures/indices
+  // Finnhub's free tier does not serve. Keeps us well under the free 60-calls/minute ceiling.
+  _equitySyms() {
+    const tape = ['SPY', 'QQQ', 'IWM', 'TLT', 'GLD', 'NVDA', 'AAPL', 'MSFT', 'HYG', 'EEM'];
+    const held = (AL.store.get('holdings', []) || []).map(h => h.sym);
+    return Array.from(new Set([...tape, ...held]))
+      .filter(s => !/[=^]/.test(s) && AL.getSeries(s) && AL.getSeries(s).cls !== 'Crypto');
+  },
+  _marketOpen() {
+    const d = new Date(), day = d.getUTCDay();
+    if (day < 1 || day > 5) return false;                          // weekends: US equities closed
+    const mins = d.getUTCHours() * 60 + d.getUTCMinutes();
+    return mins >= 13 * 60 + 30 && mins <= 20 * 60 + 5;            // ~09:30-16:00 ET in UTC (ignores DST +/-1h)
+  },
+  async _fetchEquities() {
+    const key = this.key();
+    if (!key || !this._marketOpen()) return;                       // no key or market shut: leave equities at EOD
+    for (const sym of this._equitySyms()) {
+      try {
+        const r = await fetch(`https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(sym)}&token=${encodeURIComponent(key)}`, { cache: 'no-store' });
+        if (!r.ok) continue;
+        const j = await r.json();
+        if (j && j.c > 0) { this.px[sym] = j.c; this.chg[sym] = (j.dp != null ? j.dp / 100 : (j.pc ? j.c / j.pc - 1 : 0)); }
+      } catch (e) { /* keep last */ }
+    }
+  },
+  async poll() {
+    try { await Promise.all([this._fetchCrypto(), this._fetchEquities()]); } catch (e) { }
+    this.ts = Date.now();
+    AL.bus.emit('live:update', { ts: this.ts });
+  },
+  start() {
+    if (this.running || typeof fetch !== 'function') return;       // no-op in the Node test harness
+    this.running = true;
+    this.poll();                                                   // fetch once now so it is live within seconds
+    this.timer = setInterval(() => { if (!document.hidden) this.poll(); }, 60000);   // then every minute
+    document.addEventListener('visibilitychange', () => { if (!document.hidden && this.running) this.poll(); });
+  },
+  stop() { this.running = false; if (this.timer) clearInterval(this.timer); this.timer = null; },
+};
+// freshest price for DISPLAY / VALUATION only: a live tick if we have one, else the last EOD close.
+// Analytics and backtests never call this; they read the EOD series directly.
+AL.livePx = function (sym) { const p = AL.live.px[sym]; return (p != null && p > 0) ? p : AL.lastCloseRaw(sym); };
+AL.liveChg = function (sym) { const c = AL.live.chg[sym]; if (c != null) return c; const lc = AL.lastClose(sym); return lc ? lc.chg : 0; };
 
 AL.window = function (series, from, to) {
   const { dates, values } = series;
@@ -3490,6 +3571,7 @@ UI.boot = function () {
   document.getElementById('asof').innerHTML = `DATA AS-OF <b>${AL.asof}</b>`;
   setInterval(() => { document.getElementById('clock').textContent = new Date().toTimeString().slice(0, 8); }, 1000);
   UI.buildTape();
+  UI.initLive();          // start the minute-by-minute live price poller (crypto always, stocks with a key)
   UI.initPalette();
   UI.initCmd();
   AL.bus.on('res:update', () => {
@@ -3515,12 +3597,56 @@ UI.boot = function () {
 UI.buildTape = function () {
   const syms = ['SPY', 'QQQ', 'IWM', '^VIX', 'TLT', 'GLD', 'CL=F', 'EURUSD=X', 'BTC-USD', 'ETH-USD', 'NVDA', 'AAPL', 'MSFT', 'HYG', 'EEM', '^TNX'];
   const html = syms.map(s => {
-    const lc = AL.lastClose(s);
-    if (!lc) return '';
+    const px = AL.livePx(s);
+    if (px == null) return '';
+    const chg = AL.liveChg(s);
     const name = s.replace('=X', '').replace('=F', '').replace('^', '');
-    return `<span class="tk">${name} <b>${AL.fmt.px(lc.last)}</b> <span class="${lc.chg >= 0 ? 'up' : 'dn'}">${AL.fmt.spct(lc.chg)}</span></span>`;
+    const isLive = AL.live && AL.live.px[s] != null;   // a real live tick landed for this one
+    return `<span class="tk">${name} <b>${AL.fmt.px(px)}</b> <span class="${chg >= 0 ? 'up' : 'dn'}">${AL.fmt.spct(chg)}</span>${isLive ? '<span class="tk-live" title="live tick">&#9679;</span>' : ''}</span>`;
   }).join('');
   document.getElementById('tape').innerHTML = html + html;
+};
+
+/* ---------- live-price control surface ----------
+   Kicks off the minute poller and keeps the topbar LIVE badge + tape honest about what is actually
+   ticking. Crypto is always live (Coinbase, keyless); US equities only go live once the user pastes
+   their own free Finnhub key, which we store in this browser and never anywhere else. */
+UI.initLive = function () {
+  AL.bus.on('live:update', () => {
+    UI.buildTape();
+    UI.paintLiveBadge();
+    const t = UI.currentTab && UI.currentTab();
+    // repaint the two surfaces that show live money, but only if the user is actually looking at them
+    if (t && (t.module === 'holdings' || t.module === 'command')) { try { UI.renderActive(); } catch (e) { } }
+  });
+  const badge = document.getElementById('live-badge');
+  if (badge) badge.addEventListener('click', UI.manageLiveKey);
+  UI.paintLiveBadge();
+  AL.live.start();
+};
+
+UI.paintLiveBadge = function () {
+  const led = document.getElementById('live-led'), txt = document.getElementById('live-txt'), badge = document.getElementById('live-badge');
+  if (!led || !txt) return;
+  const hasKey = !!AL.live.key();
+  const fresh = AL.live.ts && (Date.now() - AL.live.ts < 180000);   // a tick in the last 3 minutes
+  led.className = 'led ' + (fresh ? 'on' : 'idle');
+  txt.textContent = fresh ? (hasKey ? 'LIVE' : 'LIVE crypto') : 'EOD';
+  if (badge) badge.title = hasKey
+    ? 'Live stocks and crypto, refreshing every minute. Click to change or remove your Finnhub key.'
+    : 'Crypto is live every minute. Click to paste a free Finnhub key and make stocks live too.';
+};
+
+UI.manageLiveKey = function () {
+  const cur = AL.live.key();
+  if (cur) {
+    if (confirm('Live stock quotes are on with your Finnhub key. Remove it? Crypto stays live either way.')) {
+      AL.live.setKey(null); AL.live.px = {}; AL.live.chg = {}; AL.live.poll(); UI.paintLiveBadge();
+    }
+    return;
+  }
+  const k = prompt('Paste a free Finnhub API key to make US stocks and ETFs tick live every minute during market hours.\n\nGet one in about a minute at finnhub.io/register. Crypto is already live without a key. Your key is stored only in this browser and never uploaded or committed.');
+  if (k && k.trim()) { AL.live.setKey(k.trim()); AL.live.poll(); UI.paintLiveBadge(); }
 };
 
 /* ---------- command palette + terminal ---------- */
@@ -4631,16 +4757,17 @@ UI.def('holdings', 'My Holdings', '❖', 'Portfolio & Risk', function (el, state
   const rows = pf.map(h => {
     const ser = AL.getSeries(h.sym);
     if (!ser) return null;
-    const last = ser.values[ser.values.length - 1];
+    const last = AL.livePx(h.sym);   // live tick if the poller has one, otherwise the last real close
     const mv = h.qty * last;
     return { ...h, name: ser.name, cls: ser.cls, last, mv, pnl: mv - h.qty * h.costBasis, pnlPct: last / h.costBasis - 1 };
   }).filter(Boolean);
+  const anyLive = rows.some(r => AL.live && AL.live.px[r.sym] != null);   // did any position get a live price
   const totMV = Q.sum(rows.map(r => r.mv));
   const totPnl = Q.sum(rows.map(r => r.pnl));
   const totBook = totMV + (cash || 0);
   el.innerHTML = `
     <div class="section-title">Personal Portfolio Monitor
-      <span class="badge dim">valued at real ${AL.asof} closes</span>
+      <span class="badge dim">${anyLive ? 'live prices where available, else ' + AL.asof + ' closes' : 'valued at real ' + AL.asof + ' closes'}</span>
       ${cash != null ? '<span class="badge info">WHARTON MODE</span>' : ''}
       <span style="flex:1"></span>
       <button class="btn" id="h-wharton">Competition mode ($100K)</button>
@@ -6668,6 +6795,57 @@ UI.periodsPerYear = function (dates) {
   return med <= 1.6 ? 252 : med <= 10 ? 52 : med <= 45 ? 12 : 1;
 };
 
+// A price-only trend read that works for ANY instrument: single stocks, index/sector ETFs, bond
+// funds, gold, broad commodities and crypto. The fundamental Decision engine only covers single
+// stocks that have SEC filings and analyst coverage, so without this the whole ETF/bond/gold/
+// crypto side of the plan showed a blank call. This fills every one of those cells honestly. It
+// is explicitly a trend read on the real price history (long-trend + moving-average posture +
+// momentum), not a fundamental verdict, so the UI labels it as such and never conflates the two.
+UI.trendSignal = function (sym) {
+  const s = AL.getSeries(sym);
+  if (!s || !s.values || s.values.length < 40) return null;
+  const v = s.values, n = v.length, last = v[n - 1];
+  const ma50 = Q.mean(v.slice(-50));
+  const ma200 = Q.mean(v.slice(Math.max(0, n - 200)));
+  const back = Math.min(63, n - 1);                       // ~3 trading months, or as far back as we have
+  const mom = v[n - 1 - back] ? last / v[n - 1 - back] - 1 : 0;
+  let score = 0;                                          // three simple, real conditions vote -1 / +1
+  score += last > ma200 ? 1 : -1;                         // above or below the long-term trend
+  score += ma50 > ma200 ? 1 : -1;                         // golden-cross vs death-cross posture
+  score += mom > 0.02 ? 1 : mom < -0.02 ? -1 : 0;         // positive or negative 3-month momentum
+  const call = score >= 2 ? 'BUY' : score <= -2 ? 'SELL' : 'HOLD';
+  return { call, score, mom, aboveTrend: last > ma200,
+    reason: `price ${last >= ma200 ? 'above' : 'below'} its long-term trend, 3-month move ${(mom * 100).toFixed(1)}%` };
+};
+
+// A signal for EVERY holding: the fundamental Decision engine where it has real coverage (single
+// stocks), otherwise the universal price-trend read above. Returns { call, kind } so nothing is blank.
+UI.instrumentCall = function (sym) {
+  const ser = AL.getSeries(sym);
+  // only real single companies carry company fundamentals; index ETFs, bonds, gold and crypto do
+  // not, so they always get the price-trend read even when a data vendor happens to list a
+  // fund-level ratio for the ticker. This keeps the Call column honest and matches the legend.
+  if (ser && ser.cls === 'Equity') {
+    try { const d = UI.decision(sym); if (d && d.coverage > 0) return { call: d.call, kind: 'fundamental' }; } catch (e) { }
+  }
+  const tr = UI.trendSignal(sym);
+  return tr ? { call: tr.call, kind: 'trend' } : { call: null, kind: null };
+};
+
+// Render a coloured Call badge. A covered stock shows the Decision engine's BUY / SELL / HOLD verdict;
+// a fund, bond, gold or crypto sleeve has no company fundamentals, so it shows its price-trend
+// direction as Uptrend / Downtrend / Flat instead of a trade word that would clash with a plan that
+// deliberately holds it as a hedge.
+UI.callBadge = function (call, kind) {
+  if (!call) return '<span class="note">-</span>';
+  const trend = kind === 'trend';
+  const label = trend ? (call === 'BUY' ? 'Uptrend' : call === 'SELL' ? 'Downtrend' : 'Flat') : call;
+  const cls = call === 'BUY' ? 'ok' : call === 'SELL' ? 'bad' : 'warn';
+  const tip = trend ? 'price-trend read: funds, bonds, gold and crypto carry no company fundamentals to score'
+    : 'fundamental Buy / Sell / Hold verdict from the Decision engine';
+  return `<span class="badge ${cls}" title="${tip}">${label}</span>`;
+};
+
 /* Build a full multi-asset target allocation. Pure-ish: reads the data layer + advisor but
    mutates nothing. Returns tickers, weights, dollars and share counts plus the reasoning. */
 UI.buildAllocation = function (capital, profileKey, nStocks) {
@@ -6761,7 +6939,10 @@ UI.buildAllocation = function (capital, profileKey, nStocks) {
     h.shares = h.cls === 'Crypto' ? Math.floor(dollars / h.price * 1e4) / 1e4 : Math.floor(dollars / h.price);
     h.dollars = h.shares * h.price;
     deployed += h.dollars;
-    if (h.cls === 'Equity') { try { h.call = UI.decision(h.sym).call; } catch (e) { h.call = null; } }
+    // give every position a signal, not just single stocks: fundamental where we have coverage,
+    // a price-trend read for the ETF / bond / gold / crypto sleeves so no row is left blank
+    const c = UI.instrumentCall(h.sym);
+    h.call = c.call; h.callKind = c.kind;
   });
   holdings.sort((a, b) => b.dollars - a.dollars);
   const cashDollars = capital - deployed;
@@ -6820,22 +7001,35 @@ UI.SECTOR_ALIASES = {
 };
 UI.canonSector = s => (s == null ? '' : (UI.SECTOR_ALIASES[s] !== undefined ? UI.SECTOR_ALIASES[s] : s));
 
-/* Top single-stock leaders for the equity sleeve: highest advisor score, one per sector,
-   not rated SELL by the decision engine, large enough to be competition-defensible. */
+/* Top single-stock leaders for the equity sleeve, chosen for the greatest absolute decision, not by
+   any one engine. Start from the advisor's best large-caps, then re-rank that shortlist by the full
+   six-engine conviction (Decision, ML, Advisor, peer valuation, Sentiment, seasonality), drop anything
+   the decision engine rejects or the ensemble nets negative on, and keep one name per sector. So the
+   book only opens positions where several independent engines agree, and each pick is defensible. */
 UI.topStockPicks = function (n) {
   let scored;
   try { scored = UI.scoreStocks(); } catch (e) { return []; }
   if (!scored || !scored.rows) return [];
-  const out = [], seenSector = {};
-  for (const r of scored.rows) {
-    if (out.length >= n) break;
-    if (!UI.isLargeCap(r)) continue;          // real, liquid, competition-defensible names only
-    if (r.score < 0.15) continue;             // must be a genuine buy candidate
-    const sec = UI.canonSector(r.sector);
-    if (sec && seenSector[sec]) continue;     // one per sector (synonym-folded)
+  // advisor-ranked shortlist of real, liquid, genuine-buy candidates; capped so the ensemble (which
+  // fits an ML model per name) only runs on a bounded set. The cap is generous vs the ~5 we keep.
+  const shortlist = scored.rows.filter(r => UI.isLargeCap(r) && r.score >= 0.15).slice(0, 40);
+  const ranked = [];
+  for (const r of shortlist) {
     let call = null;
     try { call = UI.decision(r.sym).call; } catch (e) { }
     if (call === 'SELL') continue;            // never open a position the decision engine rejects
+    let sc = null;
+    try { sc = UI.symConviction(r.sym, scored); } catch (e) { }
+    const conv = sc ? sc.conviction : (r.score || 0);   // fall back to the advisor score if fusion is unavailable
+    if (conv <= 0) continue;                  // the fuller picture has to be net-positive to call it a leader
+    ranked.push({ r, conv });
+  }
+  ranked.sort((a, b) => b.conv - a.conv);     // greatest absolute conviction first
+  const out = [], seenSector = {};
+  for (const { r } of ranked) {
+    if (out.length >= n) break;
+    const sec = UI.canonSector(r.sector);
+    if (sec && seenSector[sec]) continue;     // one per sector (synonym-folded)
     if (sec) seenSector[sec] = true;
     out.push(r);
   }
@@ -6850,57 +7044,158 @@ UI.isLargeCap = function (r) {
   return (sp && sp.cols[r.sym]) || (r.mc && r.mc > 5000);   // S&P member, or a > $5B extended name
 };
 
-// Fuse every engine's read on ONE symbol into a single signed conviction plus plain-English
-// reasons. This is the core of the "use all the other tabs" briefing: the Decision engine, the
-// Advisor's factor score, and the alt-data Sentiment desk each vote on the same [-1, +1] scale,
-// and conviction is just their average, so agreement pushes it to the extremes and disagreement
-// cancels toward zero. Honest by construction: a name only earns a strong call when several
-// independent engines point the same way. Returns null for instruments no engine covers (index
-// ETFs, bonds, gold, crypto), which is correct: those are structural sleeves, not stock bets.
+// The ML lab's own forward view, folded into the ensemble as one more voter. It fits a ridge
+// regression on the full 15-feature history (momentum, volatility, RSI, drawdown, VIX, yield-curve
+// state and more) and reads off the model's projected ~1-week return under the latest market
+// conditions. Genuinely out of sample: the model is trained on everything up to the most recent
+// week, then asked about that week, so the number is the model's real read and not a curve-fit to
+// today. Gated to single stocks with enough history because thin-history names produce wild,
+// untrustworthy fits, and cached per symbol so a briefing never refits the same name twice.
+UI._mlCache = UI._mlCache || {};
+UI.mlForecast = function (sym) {
+  if (sym in UI._mlCache) return UI._mlCache[sym];
+  let out = null;
+  try {
+    const ser = AL.getSeries(sym);
+    if (ser && ser.cls === 'Equity' && typeof ML !== 'undefined' && ML.makeFeatures) {
+      const F = ML.makeFeatures(sym, 5);
+      if (F && F.X.length >= 400) {                        // enough history for a stable fit; skip thin names
+        const hold = 5;                                    // hold out the most recent week to predict out of sample
+        const Xtr = F.X.slice(0, F.X.length - hold), ytr = F.y.slice(0, F.y.length - hold);
+        const Xte = F.X.slice(F.X.length - hold);
+        // standardize on the training block only, so the held-out week never leaks into the scaling
+        const k = Xtr[0].length, mu = new Array(k).fill(0), sd = new Array(k).fill(0);
+        for (let j = 0; j < k; j++) { const col = Xtr.map(r => r[j]); mu[j] = Q.mean(col); sd[j] = Q.std(col) || 1; }
+        const std = r => r.map((v, j) => (v - mu[j]) / sd[j]);
+        const fit = ML.models.ridge.fit(Xtr.map(std), ytr, { lambda: 3 });
+        const pred = Q.mean(fit.predict(Xte.map(std)));    // smoothed projected 5-day forward return
+        if (isFinite(pred)) out = { pred, z: Math.max(-1, Math.min(1, pred / 0.015)) };  // ~1.5% weekly edge is a full vote
+      }
+    }
+  } catch (e) { }
+  UI._mlCache[sym] = out;
+  return out;
+};
+
+// A relative-value voter built from the same peer set the Peer Comparison tab uses: same sector,
+// closest by market cap. It asks the one question every analyst asks first, is this name cheap or
+// expensive versus the companies it actually competes with. Cheaper than the peer median on forward
+// earnings is a mild bullish tilt, richer is a mild bearish one. Growth and quality are scored
+// elsewhere in the Decision engine, so this axis stays pure valuation and carries a modest weight.
+UI.peerValue = function (sym) {
+  try {
+    const fd = AL.fund(sym), fm = AL.fundMeta();
+    if (!fd || !fm || !fd.sector) return null;
+    const key = fd.fpe > 0 ? 'fpe' : fd.pe > 0 ? 'pe' : null;   // forward P/E preferred, trailing as fallback
+    if (!key) return null;
+    const mine = fd[key];
+    if (!(mine > 0)) return null;
+    const peerVals = Object.entries(fm.tickers)
+      .filter(([s, x]) => s !== sym && x.sector === fd.sector && x.mktCap)
+      .sort((a, b) => Math.abs((a[1].mktCap || 0) - (fd.mktCap || 0)) - Math.abs((b[1].mktCap || 0) - (fd.mktCap || 0)))
+      .slice(0, 12)
+      .map(([s]) => { const p = AL.fund(s); return p ? p[key] : null; })
+      .filter(v => v != null && isFinite(v) && v > 0);
+    if (peerVals.length < 4) return null;                        // too few comparables to trust the read
+    const sorted = peerVals.slice().sort((a, b) => a - b);
+    const med = sorted.length % 2 ? sorted[(sorted.length - 1) / 2] : (sorted[sorted.length / 2 - 1] + sorted[sorted.length / 2]) / 2;
+    if (!(med > 0)) return null;
+    const z = Math.max(-1, Math.min(1, med / mine - 1));         // cheaper than peers -> positive (bullish)
+    const label = key === 'fpe' ? 'forward P/E' : 'P/E';
+    const rel = z > 0.05 ? 'cheaper than' : z < -0.05 ? 'richer than' : 'in line with';
+    const why = `Peer value: ${label} ${AL.fmt.n(mine, 1)} vs ${AL.fmt.n(med, 1)} sector median, ${rel} its ${peerVals.length} closest peers`;
+    return { z, why, mine, med, key };
+  } catch (e) { return null; }
+};
+
+// The Seasonality Explorer's read on the current calendar month, folded in as the lightest voter.
+// Some names carry a real, economically grounded monthly pattern (tax flows, heating demand, earnings
+// seasons). This only votes when the current month clears the same |t| > 2 significance bar the
+// Seasonality tab uses; otherwise it stays silent so calendar noise never sways a call. Gated to
+// single stocks and to names with several years of history, and weighted least of any engine.
+UI.seasonalEdge = function (sym) {
+  try {
+    const ser = AL.getSeries(sym);
+    if (!ser || ser.cls !== 'Equity') return null;              // structural sleeves get a trend read, not a stock bet
+    const r = AL.returns(sym);
+    if (!r || !r.dates || r.dates.length < 500) return null;    // need several years to trust a monthly average
+    const mo = new Date().getMonth();                           // the month you are actually trading in, not the stale data date
+    const bucket = [];
+    r.dates.forEach((d, i) => { if (new Date(d + 'T12:00:00Z').getUTCMonth() === mo) bucket.push(r.values[i]); });
+    if (bucket.length < 40) return null;
+    const t = Q.tstat(bucket);
+    if (!isFinite(t) || Math.abs(t) < 2) return null;           // not significant this month: stay out of the vote
+    const avg = Q.mean(bucket) * 21;                            // full-month average return, not daily
+    const z = Math.max(-1, Math.min(1, avg / 0.04));            // a 4% seasonal edge is a full vote
+    const months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+    const why = `Seasonality: ${months[mo]} has averaged ${avg >= 0 ? '+' : ''}${(avg * 100).toFixed(1)}% here (t=${t.toFixed(1)})`;
+    return { z, why, t, avg, month: mo };
+  } catch (e) { return null; }
+};
+
+// Fuse every engine's read on ONE symbol into a single signed conviction plus plain-English reasons.
+// This is the heart of the "use all the other tabs" briefing. Six independent engines each vote on
+// the same [-1, +1] scale: the fundamental Decision engine, the ML lab's forward-return model, the
+// Advisor's cross-sectional factor score, a peer-relative valuation check, the alt-data Sentiment
+// desk, and a calendar-seasonality tilt. Conviction is their WEIGHTED average, so the richer, more
+// reliable engines pull harder while a lone weak voter cannot carry a call. Honest by construction:
+// a name only earns a strong number when several independent engines point the same way. Returns
+// null for instruments no engine covers (index ETFs, bonds, gold, crypto): those are structural
+// sleeves, sized by the plan and read for trend, not single-stock bets.
 UI.symConviction = function (sym, scored) {
-  const f = AL.fmt;
   let dec = null; try { dec = UI.decision(sym); } catch (e) { }
   const srow = scored && scored.bySym ? scored.bySym[sym] : null;
   const score = srow ? srow.score : null;
   let alt = null; try { alt = UI.altSignals ? UI.altSignals(sym) : null; } catch (e) { }
-  const axes = [];   // each engine's vote, normalized so its own "strong" reading is about +/-1
-  const why = [];    // one plain sentence per engine that actually had a view
-  if (dec && dec.coverage > 0) {
-    axes.push(Math.max(-1, Math.min(1, dec.overall / 0.4)));   // BUY/SELL trip at +/-0.22, so /0.4 keeps a solid call near 1
-    why.push(`Decision engine: ${dec.call} (${dec.overall >= 0 ? '+' : ''}${dec.overall.toFixed(2)})`);
-  }
-  if (score != null) {
-    axes.push(Math.max(-1, Math.min(1, score / 0.6)));         // advisor: ~0.6 is a strong factor score
-    why.push(`Advisor factor score ${score >= 0 ? '+' : ''}${score.toFixed(2)}`);
-  }
+  const ml = UI.mlForecast(sym);
+  const peer = UI.peerValue(sym);
+  const seas = UI.seasonalEdge(sym);
+  // each engine: [signed vote in [-1,1], weight, plain-English sentence]. Weights reflect how much
+  // signal each engine really carries: the Decision engine (which itself fuses technicals, analysts,
+  // quality, growth, value and sentiment) leads; seasonality, a mere calendar tilt, trails.
+  const votes = [];
+  if (dec && dec.coverage > 0)
+    votes.push([Math.max(-1, Math.min(1, dec.overall / 0.4)), 1.00, `Decision engine: ${dec.call} (${dec.overall >= 0 ? '+' : ''}${dec.overall.toFixed(2)})`]);
+  if (ml)
+    votes.push([ml.z, 0.80, `ML model projects ${ml.pred >= 0 ? '+' : ''}${(ml.pred * 100).toFixed(1)}% over the next week`]);
+  if (score != null)
+    votes.push([Math.max(-1, Math.min(1, score / 0.6)), 0.70, `Advisor factor score ${score >= 0 ? '+' : ''}${score.toFixed(2)}`]);
+  if (peer)
+    votes.push([peer.z, 0.60, peer.why]);
   if (alt) {
     const parts = [];
     if (alt.bullRatio != null) parts.push((alt.bullRatio - 0.5) * 2);
     if (alt.toneTrend != null) parts.push(Math.max(-1, Math.min(1, alt.toneTrend)));
     if (parts.length) {
-      axes.push(Math.max(-1, Math.min(1, Q.mean(parts))));
       const bits = [];
       if (alt.bullRatio != null) bits.push(`${Math.round(alt.bullRatio * 100)}% of social chatter bullish`);
       if (alt.toneTrend != null) bits.push(alt.toneTrend > 0.05 ? 'news tone improving' : alt.toneTrend < -0.05 ? 'news tone worsening' : 'news tone flat');
       if (alt.newsSpike != null && alt.newsSpike > 0.6) bits.push('news coverage spiking');
-      if (bits.length) why.push('Sentiment: ' + bits.join(', '));
+      votes.push([Math.max(-1, Math.min(1, Q.mean(parts))), 0.50, 'Sentiment: ' + bits.join(', ')]);
     }
   }
-  if (!axes.length) return null;
-  const conviction = Q.mean(axes);
-  // how many engines actually agree with the net call, for an honest "3 of 3 engines agree" line
+  if (seas)
+    votes.push([seas.z, 0.35, seas.why]);
+  if (!votes.length) return null;
+  const axes = votes.map(v => v[0]);
+  const wsum = votes.reduce((s, v) => s + v[1], 0);
+  const conviction = votes.reduce((s, v) => s + v[0] * v[1], 0) / wsum;   // weighted mean stays in [-1, 1]
+  const why = votes.map(v => v[2]);
+  // how many engines actually agree with the net call, for an honest "5 of 6 engines agree" line
   const agree = axes.filter(a => a !== 0 && Math.sign(a) === Math.sign(conviction)).length;
-  return { sym, dec, score, alt, conviction, agree, nEngines: axes.length, why };
+  return { sym, dec, score, alt, ml, peer, seas, conviction, agree, nEngines: votes.length, why };
 };
 
-/* Compare the live book to a saved target and produce concrete, dated orders, then rank the
-   best moves by fusing the Decision engine, Advisor, Sentiment desk, regime model and a
-   concentration check. It surfaces where the most engines agree; it does not promise profit. */
+/* Compare the live book to a saved target and produce concrete, dated orders, then rank the best
+   moves by fusing all six per-name engines (Decision, ML forecast, Advisor, peer valuation,
+   Sentiment, seasonality) plus the regime model and a concentration check. It surfaces where the
+   most engines agree; it does not promise profit. */
 UI.dailyBriefing = function (target) {
   const f = AL.fmt;
   const book = AL.store.get('holdings', UI.DEMO_BOOK);
   const cash = AL.store.get('cash', null);
-  const rows = book.map(h => { const s = AL.getSeries(h.sym); return s ? { sym: h.sym, name: s.name, mv: h.qty * s.values[s.values.length - 1], price: s.values[s.values.length - 1] } : null; }).filter(Boolean);
+  // value the current book at the freshest price we have (live tick when available, else last close)
+  const rows = book.map(h => { const s = AL.getSeries(h.sym); if (!s) return null; const px = AL.livePx(h.sym); return { sym: h.sym, name: s.name, mv: h.qty * px, price: px }; }).filter(Boolean);
   const bookMV = Q.sum(rows.map(r => r.mv));
   const capital = target.capital || (bookMV + (cash || 0)) || 100000;
   const curW = {}; rows.forEach(r => curW[r.sym] = r.mv / (capital || 1));
@@ -6919,7 +7214,7 @@ UI.dailyBriefing = function (target) {
   const orders = [];
   syms.forEach(sym => {
     const ser = AL.getSeries(sym); if (!ser) return;
-    const price = ser.values[ser.values.length - 1];
+    const price = AL.livePx(sym);   // price the order at the current market, not yesterday's close
     const drift = (tgtW[sym] || 0) - (curW[sym] || 0);
     const dollars = drift * capital;
     if (Math.abs(dollars) < minDollar) return;
@@ -6927,9 +7222,11 @@ UI.dailyBriefing = function (target) {
     if (!shares) return;
     const th = target.holdings.find(h => h.sym === sym);
     const s = sig(sym);
+    // a signal on every order line: fundamental decision call where covered, else the price-trend read
+    const ic = (s && s.dec && s.dec.coverage > 0 && ser.cls === 'Equity') ? { call: s.dec.call, kind: 'fundamental' } : UI.instrumentCall(sym);
     orders.push({ sym, side: dollars > 0 ? 'BUY' : 'SELL', shares: Math.abs(shares), dollars: Math.abs(dollars), price,
       role: th ? th.role : 'not in target, exit', name: ser.name,
-      call: s && s.dec ? s.dec.call : null, conviction: s ? s.conviction : null });
+      call: ic.call, callKind: ic.kind, conviction: s ? s.conviction : null });
   });
   orders.sort((a, b) => b.dollars - a.dollars);
   const maxDrift = syms.reduce((m, s2) => Math.max(m, Math.abs((tgtW[s2] || 0) - (curW[s2] || 0))), 0);
@@ -6987,7 +7284,7 @@ UI.def('command', 'Competition Center', '◎', 'Start Here', function (el, state
   // in competition mode the capital IS the live book value, so the plan sizes to real cash
   let liveValue = null;
   if (cashMode != null) {
-    const mv = Q.sum(liveBook.map(h => { const s = AL.getSeries(h.sym); return s ? h.qty * s.values[s.values.length - 1] : 0; }));
+    const mv = Q.sum(liveBook.map(h => { const s = AL.getSeries(h.sym); return s ? h.qty * AL.livePx(h.sym) : 0; }));
     liveValue = mv + cashMode;
   }
   const capital = state.capital != null ? state.capital : (liveValue != null ? liveValue : saved.capital);
@@ -7011,10 +7308,11 @@ UI.def('command', 'Competition Center', '◎', 'Start Here', function (el, state
     </details>
     <div class="controls" style="margin-bottom:6px">
       <label class="lbl">starting capital</label>
-      <input class="inp" id="cc-cap" type="number" min="1000" step="1000" value="${Math.round(capital)}" ${cashMode != null ? 'disabled title="using your live competition book value"' : ''} style="width:130px">
+      <input class="inp" id="cc-cap" type="number" min="1000" step="1000" value="${Math.round(capital)}" title="${cashMode != null ? 'defaults to your live book value, but you can change it to re-plan for any amount' : 'your starting amount'}" style="width:130px">
       <label class="lbl">risk level</label>
-      ${Object.entries(UI.RISK_PROFILES).map(([k, p]) => `<span class="chip ${k === profile ? 'on' : ''}" data-prof="${k}">${p.label}</span>`).join('')}
+      ${Object.entries(UI.RISK_PROFILES).map(([k, p]) => `<span class="chip ${k === profile ? 'on' : ''}" data-prof="${k}" title="${f.esc(p.blurb)}">${p.label}</span>`).join('')}
       <button class="btn primary" id="cc-build">Build my plan</button>
+      ${cashMode != null ? '<span class="note">defaults to your live book value; change it to re-plan for a different amount</span>' : ''}
     </div>
     <div class="controls" style="margin-bottom:12px">
       <span class="chip ${state.view !== 'daily' ? 'on' : ''}" data-view="plan">Target plan</span>
@@ -7023,18 +7321,29 @@ UI.def('command', 'Competition Center', '◎', 'Start Here', function (el, state
     </div>
     <div id="cc-body"></div>`;
 
-  el.querySelectorAll('.chip[data-prof]').forEach(c => c.addEventListener('click', () => { state.profile = c.dataset.prof; render(); }));
-  el.querySelectorAll('.chip[data-view]').forEach(c => c.addEventListener('click', () => { state.view = c.dataset.view; el.querySelectorAll('.chip[data-view]').forEach(x => x.classList.toggle('on', x.dataset.view === state.view)); render(); }));
-  document.getElementById('cc-build').addEventListener('click', () => {
+  // (re)build the target from whatever the controls currently say, then show the plan. Shared by
+  // the risk chips and the Build button so both give instant, obvious feedback: earlier the chips
+  // only flipped a variable and left the highlight and the plan unchanged, which read as "broken".
+  function buildFromControls() {
     const cap = Math.max(1000, parseFloat(document.getElementById('cc-cap').value) || 100000);
-    state.capital = cashMode != null ? capital : cap;
-    const t = UI.buildAllocation(state.capital, state.profile || profile, 5);
+    const prof = state.profile || profile;
+    state.capital = cap;
+    const t = UI.buildAllocation(cap, prof, 5);
     AL.store.set('command_target', t);
-    AL.store.set('command_cfg', { capital: state.capital, profile: state.profile || profile });
+    AL.store.set('command_cfg', { capital: cap, profile: prof });
     state.view = 'plan';
     el.querySelectorAll('.chip[data-view]').forEach(x => x.classList.toggle('on', x.dataset.view === 'plan'));
     render();
-  });
+  }
+  el.querySelectorAll('.chip[data-prof]').forEach(c => c.addEventListener('click', () => {
+    state.profile = c.dataset.prof;
+    el.querySelectorAll('.chip[data-prof]').forEach(x => x.classList.toggle('on', x.dataset.prof === state.profile));  // move the highlight now
+    buildFromControls();   // and re-plan immediately so the new risk level is visible at once
+  }));
+  el.querySelectorAll('.chip[data-view]').forEach(c => c.addEventListener('click', () => { state.view = c.dataset.view; el.querySelectorAll('.chip[data-view]').forEach(x => x.classList.toggle('on', x.dataset.view === state.view)); render(); }));
+  document.getElementById('cc-build').addEventListener('click', buildFromControls);
+  // typing a new amount and pressing Enter (or leaving the field) re-plans too
+  document.getElementById('cc-cap').addEventListener('keydown', e => { if (e.key === 'Enter') buildFromControls(); });
 
   function render() {
     const body = document.getElementById('cc-body');
@@ -7065,9 +7374,9 @@ UI.def('command', 'Competition Center', '◎', 'Start Here', function (el, state
             <td class="sym">${h.sym}</td><td class="t">${f.esc(h.role)}</td><td class="t" style="font-size:10px;color:var(--muted)">${h.bucket}</td>
             <td class="r">${f.pct(h.dollars / t.capital, 1)}</td><td class="r">${f.usd(h.dollars)}</td>
             <td class="r"><b>${h.cls === 'Crypto' ? h.shares : h.shares + ' sh'}</b></td><td class="r">${f.px(h.price)}</td>
-            <td class="r">${h.call ? `<span class="badge ${h.call === 'BUY' ? 'ok' : h.call === 'SELL' ? 'bad' : 'warn'}">${h.call}</span>` : '<span class="note">-</span>'}</td></tr>`).join('') +
+            <td class="r">${UI.callBadge(h.call, h.callKind)}</td></tr>`).join('') +
           `<tr style="border-top:2px solid var(--line)"><td class="sym">CASH</td><td class="t">uninvested, held as dry powder</td><td></td><td class="r">${f.pct(t.cashPct, 1)}</td><td class="r">${f.usd(t.cashDollars)}</td><td class="r">-</td><td class="r">-</td><td class="r">-</td></tr>` +
-          '</tbody></table>', { nopad: true })}</div>
+          '</tbody></table><div class="note" style="padding:8px 12px 2px">Call = the Buy / Sell / Hold Decision engine verdict for single stocks. Funds, bonds, gold and crypto instead show a price-trend read (Uptrend / Downtrend / Flat), since they have no company fundamentals to score.</div>', { nopad: true })}</div>
         <div style="display:flex;flex-direction:column;gap:12px;min-width:0">
           ${UI.panel('Asset-class mix', '<div class="chart" style="height:190px" id="cc-buckets"></div>')}
           ${UI.panel('Put this plan to work', `
@@ -7104,7 +7413,7 @@ UI.def('command', 'Competition Center', '◎', 'Start Here', function (el, state
       .concat(b.opportunities.map(m => moveRow(m, 'ok', 'BUY')));
     const bestPanel = UI.panel('Best moves today, where the most engines agree',
       bestRows.length
-        ? `<div class="note" style="margin-bottom:2px">Each move fuses the Buy / Sell Decision engine, the Stock Advisor factor score and the Sentiment desk. Higher conviction means more of them point the same way. Conviction is not certainty, so open the Decision engine on any name before you act.</div>${bestRows.join('')}`
+        ? `<div class="note" style="margin-bottom:2px">Each move fuses six engines on a shared scale: the Buy / Sell Decision engine, the ML forward-return model, the Stock Advisor factor score, a peer-relative valuation check, the Sentiment desk and a calendar-seasonality tilt, weighted by how much signal each carries. Higher conviction means more of them point the same way. Conviction is not certainty, so open the Decision engine on any name before you act.</div>${bestRows.join('')}`
         : '<div class="empty">No single-name signal is strong enough to flag today. Follow the rebalance orders below to stay on plan and check back tomorrow.</div>');
 
     // narrative action plan that stitches the synthesis together
@@ -7128,7 +7437,7 @@ UI.def('command', 'Competition Center', '◎', 'Start Here', function (el, state
       ${bestPanel}
       <div style="margin-top:12px">${UI.panel('Today\'s action plan', `<ol style="margin:0;padding-left:18px;line-height:1.9">${plan.map(p => `<li>${p}</li>`).join('')}</ol>`)}</div>
       <div style="margin-top:12px">${UI.panel(`Rebalance orders ${cashMode != null ? '<span class="badge dim">one click books them all</span>' : ''}`, b.orders.length ? `<table class="tbl"><thead><tr><th>Action</th><th>Ticker</th><th>What it is</th><th class="r">Shares</th><th class="r">~$</th><th class="r">Price</th><th class="r">Signal</th></tr></thead><tbody>` +
-        b.orders.map(o => `<tr><td><span class="badge ${o.side === 'BUY' ? 'ok' : 'bad'}">${o.side}</span></td><td class="sym">${o.sym}</td><td class="t">${f.esc(o.role)}</td><td class="r"><b>${o.shares}</b></td><td class="r">${f.usd(o.dollars)}</td><td class="r">${f.px(o.price)}</td><td class="r">${o.call ? `<span class="badge ${o.call === 'BUY' ? 'ok' : o.call === 'SELL' ? 'bad' : 'warn'}">${o.call}</span>` : '<span class="note">-</span>'}</td></tr>`).join('') +
+        b.orders.map(o => `<tr><td><span class="badge ${o.side === 'BUY' ? 'ok' : 'bad'}">${o.side}</span></td><td class="sym">${o.sym}</td><td class="t">${f.esc(o.role)}</td><td class="r"><b>${o.shares}</b></td><td class="r">${f.usd(o.dollars)}</td><td class="r">${f.px(o.price)}</td><td class="r">${UI.callBadge(o.call, o.callKind)}</td></tr>`).join('') +
         `</tbody></table>${cashMode != null ? '<button class="btn primary" id="cc-exec" style="margin-top:10px">Execute all orders in my book</button>' : '<div class="note" style="margin-top:8px">Turn on competition mode (My Holdings) to book these with one click.</div>'}` : '<div class="empty">No trades needed, your book matches the plan.</div>', { nopad: b.orders.length > 0 })}</div>
       <div class="warn-box" style="margin-top:12px">This briefing fuses every engine in AlphaLab, but conviction is not a promise. No tool can guarantee you gain the most money or win the contest. Orders compare your saved plan to your live book and nothing executes until you press the button. Research, not advice, and verify contest rules before trading.</div>`;
     const ex = document.getElementById('cc-exec');

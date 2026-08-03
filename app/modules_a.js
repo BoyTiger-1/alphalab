@@ -120,6 +120,7 @@ UI.boot = function () {
   document.getElementById('asof').innerHTML = `DATA AS-OF <b>${AL.asof}</b>`;
   setInterval(() => { document.getElementById('clock').textContent = new Date().toTimeString().slice(0, 8); }, 1000);
   UI.buildTape();
+  UI.initLive();          // start the minute-by-minute live price poller (crypto always, stocks with a key)
   UI.initPalette();
   UI.initCmd();
   AL.bus.on('res:update', () => {
@@ -145,12 +146,56 @@ UI.boot = function () {
 UI.buildTape = function () {
   const syms = ['SPY', 'QQQ', 'IWM', '^VIX', 'TLT', 'GLD', 'CL=F', 'EURUSD=X', 'BTC-USD', 'ETH-USD', 'NVDA', 'AAPL', 'MSFT', 'HYG', 'EEM', '^TNX'];
   const html = syms.map(s => {
-    const lc = AL.lastClose(s);
-    if (!lc) return '';
+    const px = AL.livePx(s);
+    if (px == null) return '';
+    const chg = AL.liveChg(s);
     const name = s.replace('=X', '').replace('=F', '').replace('^', '');
-    return `<span class="tk">${name} <b>${AL.fmt.px(lc.last)}</b> <span class="${lc.chg >= 0 ? 'up' : 'dn'}">${AL.fmt.spct(lc.chg)}</span></span>`;
+    const isLive = AL.live && AL.live.px[s] != null;   // a real live tick landed for this one
+    return `<span class="tk">${name} <b>${AL.fmt.px(px)}</b> <span class="${chg >= 0 ? 'up' : 'dn'}">${AL.fmt.spct(chg)}</span>${isLive ? '<span class="tk-live" title="live tick">&#9679;</span>' : ''}</span>`;
   }).join('');
   document.getElementById('tape').innerHTML = html + html;
+};
+
+/* ---------- live-price control surface ----------
+   Kicks off the minute poller and keeps the topbar LIVE badge + tape honest about what is actually
+   ticking. Crypto is always live (Coinbase, keyless); US equities only go live once the user pastes
+   their own free Finnhub key, which we store in this browser and never anywhere else. */
+UI.initLive = function () {
+  AL.bus.on('live:update', () => {
+    UI.buildTape();
+    UI.paintLiveBadge();
+    const t = UI.currentTab && UI.currentTab();
+    // repaint the two surfaces that show live money, but only if the user is actually looking at them
+    if (t && (t.module === 'holdings' || t.module === 'command')) { try { UI.renderActive(); } catch (e) { } }
+  });
+  const badge = document.getElementById('live-badge');
+  if (badge) badge.addEventListener('click', UI.manageLiveKey);
+  UI.paintLiveBadge();
+  AL.live.start();
+};
+
+UI.paintLiveBadge = function () {
+  const led = document.getElementById('live-led'), txt = document.getElementById('live-txt'), badge = document.getElementById('live-badge');
+  if (!led || !txt) return;
+  const hasKey = !!AL.live.key();
+  const fresh = AL.live.ts && (Date.now() - AL.live.ts < 180000);   // a tick in the last 3 minutes
+  led.className = 'led ' + (fresh ? 'on' : 'idle');
+  txt.textContent = fresh ? (hasKey ? 'LIVE' : 'LIVE crypto') : 'EOD';
+  if (badge) badge.title = hasKey
+    ? 'Live stocks and crypto, refreshing every minute. Click to change or remove your Finnhub key.'
+    : 'Crypto is live every minute. Click to paste a free Finnhub key and make stocks live too.';
+};
+
+UI.manageLiveKey = function () {
+  const cur = AL.live.key();
+  if (cur) {
+    if (confirm('Live stock quotes are on with your Finnhub key. Remove it? Crypto stays live either way.')) {
+      AL.live.setKey(null); AL.live.px = {}; AL.live.chg = {}; AL.live.poll(); UI.paintLiveBadge();
+    }
+    return;
+  }
+  const k = prompt('Paste a free Finnhub API key to make US stocks and ETFs tick live every minute during market hours.\n\nGet one in about a minute at finnhub.io/register. Crypto is already live without a key. Your key is stored only in this browser and never uploaded or committed.');
+  if (k && k.trim()) { AL.live.setKey(k.trim()); AL.live.poll(); UI.paintLiveBadge(); }
 };
 
 /* ---------- command palette + terminal ---------- */
