@@ -28,6 +28,26 @@ module.exports = {
   // trades index beta for single-name alpha, it does not remove hedges. 0 keeps the original mix.
   SINGLE_STOCK_SHARE: 0.55,
 
+  // Per-account risk MODES for the competition. Each account is traded under one mode, and a mode is
+  // just a set of overrides on the knobs in this file, so the paper accounts run different strategies
+  // and race each other on real P&L. 'hedged' is the diversified full-conviction book with the bond and
+  // gold hedge sleeve. 'risk' takes real risk: the aggressive profile (light on bonds and gold), only a
+  // handful of names, and almost the whole equity bucket in single-stock conviction, so it is
+  // concentrated single-name bets, not safe ETFs. Add your own modes here freely.
+  MODES: {
+    hedged: {},   // base config unchanged: full conviction, diversified, hedge sleeve intact
+    risk: {
+      RISK_PROFILE: 'aggressive',   // eq 0.72 / bond 0.08 / real 0.12: much lighter on the safe sleeve
+      N_STOCKS: 5,                  // few, concentrated single-name bets
+      SINGLE_STOCK_SHARE: 0.85,     // the equity bucket is almost all single-stock conviction
+    },
+  },
+
+  // Which mode each account trades. Index 1 = ALPACA_KEY_ID, 2 = ALPACA_KEY_ID_2, and so on. Anything
+  // not listed defaults to 'hedged'. Set ALPACA_MODE_<n> in the environment to override an assignment
+  // without editing this file (e.g. ALPACA_MODE_2=hedged to race two identical books instead).
+  ACCOUNT_MODES: { 1: 'hedged', 2: 'risk' },
+
   // Risk rails. RAW MODE: the conviction dampers are OFF, so each account holds exactly what the six
   // engines decide, at full size, deployed immediately. Any rail below re-arms the moment you set it
   // back to a positive number; 0 means that rail is disabled. What stays on are the mechanical guards

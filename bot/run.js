@@ -2,14 +2,17 @@
 // The autonomous bot. GitHub Actions calls this every 15 minutes while the US market is open, so it
 // trades through the whole session in the cloud with your computer off. One run does exactly this, for
 // every account you have configured: read the account, decide whether it is safe to trade, ask
-// AlphaLab's engines for the daily target book, then let the intraday strategy work the account toward
-// that target.
+// AlphaLab's engines for the target book, then let the intraday strategy work the account toward it.
+//
+// Each account is traded under a risk MODE (see config.js): account 1 runs 'hedged' (the diversified
+// full-conviction book), account 2 runs 'risk' (concentrated, aggressive, mostly single stocks), so the
+// two paper accounts compete live on the same brain. Assignments live in config.ACCOUNT_MODES and can
+// be overridden per account with ALPACA_MODE_<n>.
 //
 // It never holds your keys in code. They arrive as environment variables (GitHub Actions secrets):
 //   ALPACA_KEY_ID,   ALPACA_SECRET_KEY     (account 1, required)
 //   ALPACA_KEY_ID_2, ALPACA_SECRET_KEY_2   (account 2, optional; _3 .. _9 also work)
-// Every configured account is traded on the same six-engine brain, one after another. A failure on one
-// account never stops another. Set DRY_RUN=1 to compute and print everything without sending an order.
+// A failure on one account never stops another. Set DRY_RUN=1 to compute and print without sending.
 
 const Alpaca = require('./alpaca');
 const engine = require('./engine');
@@ -36,23 +39,33 @@ function flush(log) {
 // same brain. Accounts with no keys are simply skipped, so one pair still behaves exactly as before.
 function accounts() {
   const list = [];
-  const push = (label, keyId, secret) => { if (keyId && secret) list.push({ label, keyId, secret }); };
-  push('account 1', process.env.ALPACA_KEY_ID, process.env.ALPACA_SECRET_KEY);
-  for (let i = 2; i <= 9; i++) push('account ' + i, process.env['ALPACA_KEY_ID_' + i], process.env['ALPACA_SECRET_KEY_' + i]);
+  const push = (index, keyId, secret) => { if (keyId && secret) list.push({ index, label: 'account ' + index, keyId, secret }); };
+  push(1, process.env.ALPACA_KEY_ID, process.env.ALPACA_SECRET_KEY);
+  for (let i = 2; i <= 9; i++) push(i, process.env['ALPACA_KEY_ID_' + i], process.env['ALPACA_SECRET_KEY_' + i]);
   return list;
+}
+
+// The effective config for one account: the base config with its risk mode's overrides applied on top.
+// ALPACA_MODE_<n> in the environment wins over config.ACCOUNT_MODES so an assignment can change without
+// a code edit. Unknown modes fall back to the base config, never crash.
+function configFor(index) {
+  const name = process.env['ALPACA_MODE_' + index] || (cfg.ACCOUNT_MODES && cfg.ACCOUNT_MODES[index]) || 'hedged';
+  const overrides = (cfg.MODES && cfg.MODES[name]) || {};
+  return { mode: name, c: Object.assign({}, cfg, overrides) };
 }
 
 // One full pass over ONE account: read it, decide, and (unless DRY) place the orders. Everything it
 // prints goes into this account's own `log` so the accounts never bleed into each other's summary.
 async function tradeAccount(creds) {
+  const { mode, c } = configFor(creds.index);
   const log = [];
   const say = line => { log.push(line); console.log(line); };
-  const alpaca = new Alpaca(creds.keyId, creds.secret, cfg.ALPACA_BASE_URL);
-  const opts = { stockShare: cfg.SINGLE_STOCK_SHARE };
+  const alpaca = new Alpaca(creds.keyId, creds.secret, c.ALPACA_BASE_URL);
+  const opts = { stockShare: c.SINGLE_STOCK_SHARE };
 
   // --- 1. account health. If Alpaca has flagged the account, we do nothing at all. ---------------
   const acct = await alpaca.account();
-  say(`# AlphaLab paper bot - ${creds.label}${DRY ? ' (DRY RUN)' : ''}`);
+  say(`# AlphaLab paper bot - ${creds.label} [${mode} mode]${DRY ? ' (DRY RUN)' : ''}`);
   if (acct.trading_blocked || acct.account_blocked || acct.status !== 'ACTIVE') {
     say(`account not tradable (status ${acct.status}, trading_blocked ${acct.trading_blocked}). stopping.`);
     return flush(log);
@@ -60,14 +73,14 @@ async function tradeAccount(creds) {
   const nav = parseFloat(acct.equity);
   const lastEq = parseFloat(acct.last_equity) || nav;
   const dayPnl = lastEq > 0 ? nav / lastEq - 1 : 0;
-  const incePnl = nav - cfg.STARTING_BALANCE;
+  const incePnl = nav - c.STARTING_BALANCE;
 
   say(`equity ${money(nav)} | cash ${money(acct.cash)} | today ${dayPnl >= 0 ? '+' : ''}${pct(dayPnl)} | since start ${incePnl >= 0 ? '+' : ''}${money(incePnl)}`);
 
   // --- 2. daily-loss kill switch. Disabled when MAX_DAILY_LOSS_PCT is 0 (raw mode). --------------
   const positionsRaw = await alpaca.positions();
-  if (cfg.MAX_DAILY_LOSS_PCT > 0 && dayPnl <= -cfg.MAX_DAILY_LOSS_PCT && positionsRaw.length) {
-    say(`DAILY LOSS LIMIT HIT (${pct(dayPnl)} <= -${pct(cfg.MAX_DAILY_LOSS_PCT)}). Flattening everything and standing down for the day.`);
+  if (c.MAX_DAILY_LOSS_PCT > 0 && dayPnl <= -c.MAX_DAILY_LOSS_PCT && positionsRaw.length) {
+    say(`DAILY LOSS LIMIT HIT (${pct(dayPnl)} <= -${pct(c.MAX_DAILY_LOSS_PCT)}). Flattening everything and standing down for the day.`);
     if (!DRY) { try { await alpaca.closeAll(); say('closed all positions.'); } catch (e) { say('closeAll failed: ' + e.message); } }
     else say('(dry run: would closeAll)');
     return flush(log);
@@ -97,17 +110,17 @@ async function tradeAccount(creds) {
   // A quick snapshot pass first, only to learn which names are in play, then live quotes for them plus
   // whatever we hold, then the real pass that recomputes the whole book (regime, conviction, sizing)
   // on the current market. If the quote feed is down we simply keep the snapshot pass.
-  const snap = engine.getTarget(nav, cfg.RISK_PROFILE, cfg.N_STOCKS, null, opts);
+  const snap = engine.getTarget(nav, c.RISK_PROFILE, c.N_STOCKS, null, opts);
   const universe = Array.from(new Set([...snap.holdings.map(h => h.sym), ...Object.keys(held)]));
   let quoteMap = {};
-  if (cfg.USE_LIVE_QUOTES) { try { quoteMap = await quotes.liveQuotes(universe); } catch (e) { } }
+  if (c.USE_LIVE_QUOTES) { try { quoteMap = await quotes.liveQuotes(universe); } catch (e) { } }
   const livePrices = quotes.pricesOf(quoteMap);
   const moves = quotes.movesOf(quoteMap);
   const target = Object.keys(livePrices).length
-    ? engine.getTarget(nav, cfg.RISK_PROFILE, cfg.N_STOCKS, livePrices, opts)
+    ? engine.getTarget(nav, c.RISK_PROFILE, c.N_STOCKS, livePrices, opts)
     : snap;
 
-  const targetD = strategy.targetDollars(target.holdings, nav, cfg);
+  const targetD = strategy.targetDollars(target.holdings, nav, c);
   const priceOf = {};
   for (const h of target.holdings) priceOf[h.sym] = h.price;
   for (const s in livePrices) priceOf[s] = livePrices[s];
@@ -125,7 +138,7 @@ async function tradeAccount(creds) {
   }
 
   // --- 6. plan the run: stops, exits, take-profits, and a learning-weighted paced slice ----------
-  const { actions, holds } = strategy.plan({ nav, held, targetD, moves, bias, cfg });
+  const { actions, holds } = strategy.plan({ nav, held, targetD, moves, bias, cfg: c });
   const sells = actions.filter(a => a.side === 'SELL');
   const buys = actions.filter(a => a.side === 'BUY');
 
