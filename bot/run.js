@@ -159,6 +159,24 @@ async function tradeAccount(creds) {
   // --- 6. plan the run: stops, exits, flips, take-profits, and a paced slice toward the signed target
   const { actions, holds } = strategy.plan({ nav, held, targetD, moves, bias, cfg: c });
 
+  // attach a per-name "why" to every order from the six-engine fusion, so each line in the trade log
+  // explains the reasoning behind the action and not just the mechanical move. The engine's own notes
+  // (Decision engine, ML forecast, sentiment, ...) ride along with the trade.
+  try {
+    const R = engine.reasonsFor(actions.map(a => a.sym));
+    for (const a of actions) {
+      const r = R[a.sym];
+      if (!r) continue;
+      const bits = [];
+      if (r.call) bits.push(r.call);
+      if (r.conviction != null) bits.push(`conv ${r.conviction >= 0 ? '+' : ''}${r.conviction.toFixed(2)}`);
+      if (r.agree != null && r.nEngines != null) bits.push(`${r.agree}/${r.nEngines} engines agree`);
+      let why = bits.join(', ');
+      if (r.why && r.why.length) why += ' - ' + r.why.join('; ');
+      a.reason = `${a.reason} | why: ${why}`;
+    }
+  } catch (e) { }
+
   // --- 7. execute. Reduce-risk orders first (close, trim, cover) so exits and covers free up buying
   // power, then add-risk orders (short, buy). Every order is wrapped so one rejection (not shortable,
   // wash trade, not tradable, etc.) never stops the rest of the run.

@@ -137,7 +137,31 @@ function getShorts(n) {
   return out;
 }
 
-module.exports = { boot, getTarget, getShorts, applyLivePrices };
+// A short, human "why" for each symbol, straight from the six-engine fusion that drove the decision:
+// the call, the conviction, how many engines agree, and the top one or two engine sentences (Decision
+// engine, ML forecast, Advisor, peer value, Sentiment, seasonality). run.js appends this to every order
+// line so the trade log reads like a desk's rationale, not just a mechanical diff. Names the fusion has
+// nothing to say about (some ETFs) are simply left out, and the mechanical reason stands on its own.
+function reasonsFor(syms) {
+  boot();
+  const out = {};
+  if (!syms || !syms.length) return out;
+  let scored; try { scored = UI.scoreStocks(); } catch (e) { return out; }
+  for (const sym of Array.from(new Set(syms))) {
+    let sc = null; try { sc = UI.symConviction(sym, scored); } catch (e) { }
+    if (!sc) continue;
+    out[sym] = {
+      call: sc.dec ? sc.dec.call : null,
+      conviction: typeof sc.conviction === 'number' ? sc.conviction : null,
+      agree: sc.agree,
+      nEngines: sc.nEngines,
+      why: (sc.why || []).slice(0, 2),
+    };
+  }
+  return out;
+}
+
+module.exports = { boot, getTarget, getShorts, reasonsFor, applyLivePrices };
 
 // Direct run: print the target book for the configured starting balance. This is a full dry run of
 // the brain with no broker and no keys, so you can see exactly what the bot intends before it ever

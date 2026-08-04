@@ -1,13 +1,22 @@
 # Runs the AlphaLab paper bot in the cloud, so trading happens with your computer off.
 #
-# We want the bot acting about once a minute all session. GitHub's own scheduler cannot fire faster
-# than every 5 minutes and is best-effort, so instead each scheduled run is a short-lived "supervisor"
-# that loops internally, calling the bot every 60 seconds for ~14 minutes and then exiting. The next
-# scheduled supervisor picks up where it left off. Each bot call is its own fresh Node process, so live
-# prices and the learning read are recomputed clean every minute with no stale state.
+# We want the bot acting about once a minute all session. GitHub's own scheduler cannot fire faster than
+# every 5 minutes AND is best-effort: it routinely delays or drops scheduled runs, so a sparse cron
+# leaves long dead windows with no trading. So each scheduled run is a short-lived "supervisor" that
+# loops internally, trading every ~60 seconds for ~14 minutes, and the cron fires every 5 minutes (the
+# fastest GitHub allows). Because a 14-minute supervisor outlives the 5-minute cron interval, the next
+# fire is always queued behind the running one (concurrency below serializes them) and starts the instant
+# it ends, so the supervisors chain back-to-back and coverage stays continuous even when GitHub skips
+# some fires. Each bot call is its own fresh Node process, so live prices and the learning read are
+# recomputed clean every minute with no stale state.
 #
-# This repo is public, so GitHub Actions minutes are free and unlimited, which is what makes a per-minute
-# loop all day practical.
+# Honest limit: nothing inside GitHub Actions can GUARANTEE a trade every single minute, because the
+# whole chain depends on GitHub firing the cron at all. This setup makes it as continuous as the free
+# tier allows. For a hard per-minute guarantee you need an always-on host (a small VM or a service with
+# a real scheduler); see bot/README.md.
+#
+# This repo is public, so GitHub Actions minutes are free and unlimited, which is what makes the
+# overlapping per-minute loop all day practical.
 #
 # Setup you do once (see bot/README.md for the click-by-click):
 #   Settings -> Secrets and variables -> Actions -> New repository secret
@@ -25,7 +34,7 @@ name: AlphaLab paper bot
 
 on:
   schedule:
-    - cron: '*/15 13-21 * * 1-5'   # a supervisor every 15 min, weekdays, 13:00-21:45 UTC (covers 9:30-16:00 ET year round)
+    - cron: '*/5 13-21 * * 1-5'   # a supervisor every 5 min (GitHub's max), weekdays, 13:00-21:55 UTC (covers 9:30-16:00 ET year round). Supervisors overlap and chain so coverage stays continuous.
   workflow_dispatch:               # also lets you run a single pass by hand from the Actions tab
     inputs:
       dry_run:
@@ -68,12 +77,16 @@ jobs:
             exit 1
           fi
           if [ "${{ github.event_name }}" = "schedule" ]; then
-            # supervisor: trade every 60s for ~14 minutes, then let the next scheduled run take over
+            # supervisor: trade every ~60s for ~14 minutes, then let the next (already-queued) supervisor
+            # take over. We time each loop so the PERIOD is ~60s: a two-account pass takes ~30s, so a flat
+            # 60s sleep would drift trades out to ~90s apart. Sleep only the remainder of the minute.
             end=$(( $(date +%s) + 840 ))
             while [ "$(date +%s)" -lt "$end" ]; do
+              t0=$(date +%s)
               node bot/run.js || true
-              now=$(date +%s)
-              if [ $(( now + 60 )) -lt "$end" ]; then sleep 60; else break; fi
+              rest=$(( 60 - ( $(date +%s) - t0 ) ))
+              if [ "$rest" -lt 5 ]; then rest=5; fi
+              if [ $(( $(date +%s) + rest )) -lt "$end" ]; then sleep "$rest"; else break; fi
             done
           else
             # manual run from the Actions tab: a single pass (handy for a dry run)
