@@ -1,0 +1,68 @@
+# Runs the AlphaLab paper bot in the cloud, so trading happens with your computer off.
+#
+# We want the bot acting about once a minute all session. GitHub's own scheduler cannot fire faster
+# than every 5 minutes and is best-effort, so instead each scheduled run is a short-lived "supervisor"
+# that loops internally, calling the bot every 60 seconds for ~14 minutes and then exiting. The next
+# scheduled supervisor picks up where it left off. Each bot call is its own fresh Node process, so live
+# prices and the learning read are recomputed clean every minute with no stale state.
+#
+# This repo is public, so GitHub Actions minutes are free and unlimited, which is what makes a per-minute
+# loop all day practical.
+#
+# Setup you do once (see bot/README.md for the click-by-click):
+#   Settings -> Secrets and variables -> Actions -> New repository secret
+#     ALPACA_KEY_ID       = your paper key id
+#     ALPACA_SECRET_KEY   = your paper secret key
+# The keys live only in encrypted GitHub secrets. They are never in the code or the logs.
+#
+# Note: GitHub disables scheduled workflows after 60 days with no repo activity. Any push resets that,
+# or open the Actions tab and re-enable it.
+
+name: AlphaLab paper bot
+
+on:
+  schedule:
+    - cron: '*/15 13-21 * * 1-5'   # a supervisor every 15 min, weekdays, 13:00-21:45 UTC (covers 9:30-16:00 ET year round)
+  workflow_dispatch:               # also lets you run a single pass by hand from the Actions tab
+    inputs:
+      dry_run:
+        description: 'Dry run (compute and log orders without sending any)'
+        type: boolean
+        default: false
+
+# never let two supervisors run at once and double-trade; a late one just queues behind the current one
+concurrency:
+  group: alphalab-paper-bot
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  trade:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Run the bot
+        env:
+          ALPACA_KEY_ID: ${{ secrets.ALPACA_KEY_ID }}
+          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+          FINNHUB_KEY: ${{ secrets.FINNHUB_KEY }}   # optional: your own live-quote key, else the public one is used
+          DRY_RUN: ${{ github.event.inputs.dry_run == 'true' && '1' || '' }}
+        run: |
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            # supervisor: trade every 60s for ~14 minutes, then let the next scheduled run take over
+            end=$(( $(date +%s) + 840 ))
+            while [ "$(date +%s)" -lt "$end" ]; do
+              node bot/run.js || true
+              now=$(date +%s)
+              if [ $(( now + 60 )) -lt "$end" ]; then sleep 60; else break; fi
+            done
+          else
+            # manual run from the Actions tab: a single pass (handy for a dry run)
+            node bot/run.js
+          fi
