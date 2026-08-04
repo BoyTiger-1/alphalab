@@ -51,7 +51,7 @@ function plan({ nav, held, targetD, moves, bias, cfg }) {
     const cd = pos ? pos.marketValue : 0;
 
     // 1. stop-loss: a real loss from our entry gets cut in full, before anything else can add risk.
-    if (pos && pos.plpc != null && pos.plpc <= -cfg.STOP_LOSS_PCT) {
+    if (cfg.STOP_LOSS_PCT > 0 && pos && pos.plpc != null && pos.plpc <= -cfg.STOP_LOSS_PCT) {
       actions.push({ sym, side: 'SELL', kind: 'close', reason: `stop-loss ${(pos.plpc * 100).toFixed(1)}%` });
       continue;
     }
@@ -61,7 +61,7 @@ function plan({ nav, held, targetD, moves, bias, cfg }) {
     if (td <= 0 && !pos) continue;   // not held, not wanted
 
     // 3. take-profit: a big winner that is now overweight gets trimmed back to its target weight.
-    if (pos && pos.plpc != null && pos.plpc >= cfg.TAKE_PROFIT_PCT && cd > td) {
+    if (cfg.TAKE_PROFIT_PCT > 0 && pos && pos.plpc != null && pos.plpc >= cfg.TAKE_PROFIT_PCT && cd > td) {
       const trim = round2(cd - td);
       if (trim >= minTrade) {
         actions.push({ sym, side: 'SELL', kind: 'trim', dollars: trim, reason: `take-profit +${(pos.plpc * 100).toFixed(1)}%` });

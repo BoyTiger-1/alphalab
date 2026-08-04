@@ -77,10 +77,10 @@ function applyLivePrices(livePrices) {
 // their target weight (fraction of the book), plus how much the plan leaves in cash. Crypto rows are
 // tagged so the orchestrator can skip them while this version stays equities-only. Pass livePrices
 // (a map sym -> current price) to recompute the whole book on live data.
-function getTarget(capital, profile, nStocks, livePrices) {
+function getTarget(capital, profile, nStocks, livePrices, opts) {
   boot();
   const injected = applyLivePrices(livePrices);
-  const t = UI.buildAllocation(capital, profile, nStocks);
+  const t = UI.buildAllocation(capital, profile, nStocks, opts);
   t._liveInjected = injected;
   const holdings = (t.holdings || [])
     .filter(h => h.weight > 0 && h.price > 0)
@@ -104,7 +104,7 @@ module.exports = { boot, getTarget, applyLivePrices };
 // places a trade. Usage: node bot/engine.js
 if (require.main === module) {
   const cfg = require('./config');
-  const t = getTarget(cfg.STARTING_BALANCE, cfg.RISK_PROFILE, cfg.N_STOCKS);
+  const t = getTarget(cfg.STARTING_BALANCE, cfg.RISK_PROFILE, cfg.N_STOCKS, null, { stockShare: cfg.SINGLE_STOCK_SHARE });
   const money = n => '$' + n.toFixed(2);
   console.log(`\nAlphaLab target book for ${money(cfg.STARTING_BALANCE)}  (${cfg.RISK_PROFILE}, ${cfg.N_STOCKS} stocks)`);
   if (t.regimeLabel) console.log(`regime: ${t.regimeLabel}    expected vol: ${t.expVol != null ? (t.expVol * 100).toFixed(1) + '%' : 'n/a'}`);

@@ -16,16 +16,28 @@ module.exports = {
   // tilts on its own, which is the sane default for an unattended bot.
   RISK_PROFILE: 'balanced',
 
-  // How many single-stock leaders the advisor is allowed to add on top of the index sleeves. These
-  // are the names re-ranked by the full six-engine conviction, one per sector.
-  N_STOCKS: 5,
+  // How many single-stock leaders the advisor is allowed to add on top of the index sleeves. These are
+  // the names re-ranked by the full six-engine conviction, one per sector (so this is capped by how many
+  // sectors have a genuine buy). Raised so the book actually carries real stock picks, not just ETFs.
+  N_STOCKS: 10,
 
-  // Risk rails. These are hard limits the bot will not cross, no matter what the engines say.
-  MAX_POSITION_PCT: 0.30,   // never let a single position exceed 30% of the book
-  MAX_DAILY_LOSS_PCT: 0.08, // if the account is down more than 8% on the day, flatten everything and stop
+  // How big a slice of the EQUITY bucket goes to those single-stock conviction picks (the rest of the
+  // equity bucket is index ETFs: core, growth, international, emerging, dividend). The stock default is
+  // only ~0.24, which is why an unattended run looked "all ETFs". We lean it up so the six-engine stock
+  // alpha actually drives the book. The bond and real-asset HEDGE sleeves are untouched by this, so it
+  // trades index beta for single-name alpha, it does not remove hedges. 0 keeps the original mix.
+  SINGLE_STOCK_SHARE: 0.55,
+
+  // Risk rails. RAW MODE: the conviction dampers are OFF, so each account holds exactly what the six
+  // engines decide, at full size, deployed immediately. Any rail below re-arms the moment you set it
+  // back to a positive number; 0 means that rail is disabled. What stays on are the mechanical guards
+  // that only stop broken behavior, never the AI's decisions: a closed market, a garbage quote, and a
+  // sub-dollar order. Those are not safeguards on conviction, they just keep the bot from erroring out.
+  MAX_POSITION_PCT: 1.0,    // 1.0 = no artificial cap; the engine's own target weight sizes each name
+  MAX_DAILY_LOSS_PCT: 0,    // 0 = no daily-loss kill switch; a bad day is not auto-flattened
   REBALANCE_THRESHOLD: 0.015, // trade a name once it has drifted more than 1.5% of the book off target.
-                            // On a small $2000 book this has to stay low, or the single-stock conviction
-                            // picks (~2.8% each) sit below the threshold and can never be opened at all.
+                            // Kept small so the ~2.8% single-stock picks can actually be opened, and so the
+                            // bot does not churn cents every run. This is execution hygiene, not a limiter.
   MIN_TRADE_USD: 8,         // never send an order smaller than this; fractional orders make small lots fine
 
   // Intraday trading. The daily target book is the destination; these decide how the bot works toward
@@ -34,11 +46,15 @@ module.exports = {
   // It runs every 15 minutes while the market is open (the cron in .github/workflows/trade.yml). On
   // each run it does not slam the full gap to target in one order. It works a slice of the remaining
   // distance, which paces entries and exits across the day the way a real execution desk does.
-  PARTICIPATION: 0.34,      // fraction of the remaining gap to target to trade on each run (0..1)
+  PARTICIPATION: 1.0,       // RAW MODE: 1.0 = trade the full remaining gap to target each run, so the
+                            // engine's decision is deployed immediately instead of eased in over the day.
+                            // Lower it (e.g. 0.34) to pace entries across the session like a desk again.
 
   // Live risk management on open positions, checked every run against Alpaca's own P&L numbers.
-  STOP_LOSS_PCT: 0.08,      // cut a position entirely once it is down this much from its entry price
-  TAKE_PROFIT_PCT: 0.18,    // once a position is up this much from entry, trim it back toward its target
+  // RAW MODE: both are 0 (off), so a position is never auto-cut or auto-trimmed against the engines.
+  // The book only changes when the engines' own target changes. Set a positive number to re-arm either.
+  STOP_LOSS_PCT: 0,         // 0 = off. e.g. 0.08 would cut a position once it is down 8% from its entry
+  TAKE_PROFIT_PCT: 0,       // 0 = off. e.g. 0.18 would trim a position once it is up 18% from its entry
 
   // Buy weakness. When the bot is adding to a name that is red on the day it leans in a little harder,
   // and when the name is already extended up it eases off. This tilts each slice by live intraday move.

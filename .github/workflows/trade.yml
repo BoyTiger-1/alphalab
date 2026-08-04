@@ -13,6 +13,9 @@
 #   Settings -> Secrets and variables -> Actions -> New repository secret
 #     ALPACA_KEY_ID       = your paper key id
 #     ALPACA_SECRET_KEY   = your paper secret key
+#   Optional second paper account, traded on the same brain in the same run:
+#     ALPACA_KEY_ID_2     = second paper key id
+#     ALPACA_SECRET_KEY_2 = second paper secret key
 # The keys live only in encrypted GitHub secrets. They are never in the code or the logs.
 #
 # Note: GitHub disables scheduled workflows after 60 days with no repo activity. Any push resets that,
@@ -51,6 +54,8 @@ jobs:
         env:
           ALPACA_KEY_ID: ${{ secrets.ALPACA_KEY_ID }}
           ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+          ALPACA_KEY_ID_2: ${{ secrets.ALPACA_KEY_ID_2 }}       # optional: a second paper account, traded on the same brain
+          ALPACA_SECRET_KEY_2: ${{ secrets.ALPACA_SECRET_KEY_2 }}
           FINNHUB_KEY: ${{ secrets.FINNHUB_KEY }}   # optional: your own live-quote key, else the public one is used
           DRY_RUN: ${{ github.event.inputs.dry_run == 'true' && '1' || '' }}
         run: |

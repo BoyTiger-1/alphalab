@@ -1,12 +1,15 @@
 'use strict';
 // The autonomous bot. GitHub Actions calls this every 15 minutes while the US market is open, so it
-// trades through the whole session in the cloud with your computer off. One run does exactly this:
-// read the account, decide whether it is safe to trade, ask AlphaLab's engines for the daily target
-// book, then let the intraday strategy work the account toward that target a slice at a time.
+// trades through the whole session in the cloud with your computer off. One run does exactly this, for
+// every account you have configured: read the account, decide whether it is safe to trade, ask
+// AlphaLab's engines for the daily target book, then let the intraday strategy work the account toward
+// that target.
 //
 // It never holds your keys in code. They arrive as environment variables (GitHub Actions secrets):
-//   ALPACA_KEY_ID, ALPACA_SECRET_KEY
-// Set DRY_RUN=1 to compute and print everything without sending a single order.
+//   ALPACA_KEY_ID,   ALPACA_SECRET_KEY     (account 1, required)
+//   ALPACA_KEY_ID_2, ALPACA_SECRET_KEY_2   (account 2, optional; _3 .. _9 also work)
+// Every configured account is traded on the same six-engine brain, one after another. A failure on one
+// account never stops another. Set DRY_RUN=1 to compute and print everything without sending an order.
 
 const Alpaca = require('./alpaca');
 const engine = require('./engine');
@@ -19,41 +22,62 @@ const DRY = process.env.DRY_RUN === '1' || process.env.DRY_RUN === 'true';
 const money = n => '$' + Number(n).toFixed(2);
 const pct = n => (n * 100).toFixed(2) + '%';
 
-// collect human-readable lines for both the console and the GitHub Actions run summary
-const log = [];
-function say(line) { log.push(line); console.log(line); }
+// Flush one account's human-readable lines to the GitHub Actions run summary. The lines were already
+// streamed to the console live; this just gives each account its own block in the summary panel.
+function flush(log) {
+  const fs = require('fs');
+  if (process.env.GITHUB_STEP_SUMMARY) {
+    try { fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, log.join('\n') + '\n\n'); } catch (e) { }
+  }
+}
 
-async function main() {
-  const alpaca = new Alpaca(process.env.ALPACA_KEY_ID, process.env.ALPACA_SECRET_KEY, cfg.ALPACA_BASE_URL);
+// Every account the bot should trade, read from the environment. Account 1 is the original pair; add
+// ALPACA_KEY_ID_2 / ALPACA_SECRET_KEY_2 (and _3 .. _9) as secrets to trade more paper accounts on the
+// same brain. Accounts with no keys are simply skipped, so one pair still behaves exactly as before.
+function accounts() {
+  const list = [];
+  const push = (label, keyId, secret) => { if (keyId && secret) list.push({ label, keyId, secret }); };
+  push('account 1', process.env.ALPACA_KEY_ID, process.env.ALPACA_SECRET_KEY);
+  for (let i = 2; i <= 9; i++) push('account ' + i, process.env['ALPACA_KEY_ID_' + i], process.env['ALPACA_SECRET_KEY_' + i]);
+  return list;
+}
+
+// One full pass over ONE account: read it, decide, and (unless DRY) place the orders. Everything it
+// prints goes into this account's own `log` so the accounts never bleed into each other's summary.
+async function tradeAccount(creds) {
+  const log = [];
+  const say = line => { log.push(line); console.log(line); };
+  const alpaca = new Alpaca(creds.keyId, creds.secret, cfg.ALPACA_BASE_URL);
+  const opts = { stockShare: cfg.SINGLE_STOCK_SHARE };
 
   // --- 1. account health. If Alpaca has flagged the account, we do nothing at all. ---------------
   const acct = await alpaca.account();
+  say(`# AlphaLab paper bot - ${creds.label}${DRY ? ' (DRY RUN)' : ''}`);
   if (acct.trading_blocked || acct.account_blocked || acct.status !== 'ACTIVE') {
     say(`account not tradable (status ${acct.status}, trading_blocked ${acct.trading_blocked}). stopping.`);
-    return finish();
+    return flush(log);
   }
   const nav = parseFloat(acct.equity);
   const lastEq = parseFloat(acct.last_equity) || nav;
   const dayPnl = lastEq > 0 ? nav / lastEq - 1 : 0;
   const incePnl = nav - cfg.STARTING_BALANCE;
 
-  say(`# AlphaLab paper bot ${DRY ? '(DRY RUN)' : ''}`);
   say(`equity ${money(nav)} | cash ${money(acct.cash)} | today ${dayPnl >= 0 ? '+' : ''}${pct(dayPnl)} | since start ${incePnl >= 0 ? '+' : ''}${money(incePnl)}`);
 
-  // --- 2. daily-loss kill switch. This runs before anything else that could add risk. ------------
+  // --- 2. daily-loss kill switch. Disabled when MAX_DAILY_LOSS_PCT is 0 (raw mode). --------------
   const positionsRaw = await alpaca.positions();
-  if (dayPnl <= -cfg.MAX_DAILY_LOSS_PCT && positionsRaw.length) {
+  if (cfg.MAX_DAILY_LOSS_PCT > 0 && dayPnl <= -cfg.MAX_DAILY_LOSS_PCT && positionsRaw.length) {
     say(`DAILY LOSS LIMIT HIT (${pct(dayPnl)} <= -${pct(cfg.MAX_DAILY_LOSS_PCT)}). Flattening everything and standing down for the day.`);
     if (!DRY) { try { await alpaca.closeAll(); say('closed all positions.'); } catch (e) { say('closeAll failed: ' + e.message); } }
     else say('(dry run: would closeAll)');
-    return finish();
+    return flush(log);
   }
 
   // --- 3. is the market open? Fractional market orders only fill during regular hours. -----------
   const clock = await alpaca.clock();
   if (!clock.is_open && !DRY) {
     say(`market is closed (next open ${clock.next_open}). nothing to do.`);
-    return finish();
+    return flush(log);
   }
 
   // index current positions by symbol, carrying the live P&L numbers the strategy needs
@@ -73,14 +97,14 @@ async function main() {
   // A quick snapshot pass first, only to learn which names are in play, then live quotes for them plus
   // whatever we hold, then the real pass that recomputes the whole book (regime, conviction, sizing)
   // on the current market. If the quote feed is down we simply keep the snapshot pass.
-  const snap = engine.getTarget(nav, cfg.RISK_PROFILE, cfg.N_STOCKS);
+  const snap = engine.getTarget(nav, cfg.RISK_PROFILE, cfg.N_STOCKS, null, opts);
   const universe = Array.from(new Set([...snap.holdings.map(h => h.sym), ...Object.keys(held)]));
   let quoteMap = {};
   if (cfg.USE_LIVE_QUOTES) { try { quoteMap = await quotes.liveQuotes(universe); } catch (e) { } }
   const livePrices = quotes.pricesOf(quoteMap);
   const moves = quotes.movesOf(quoteMap);
   const target = Object.keys(livePrices).length
-    ? engine.getTarget(nav, cfg.RISK_PROFILE, cfg.N_STOCKS, livePrices)
+    ? engine.getTarget(nav, cfg.RISK_PROFILE, cfg.N_STOCKS, livePrices, opts)
     : snap;
 
   const targetD = strategy.targetDollars(target.holdings, nav, cfg);
@@ -167,19 +191,24 @@ async function main() {
   else done.forEach(d => say('- ' + d));
   say(`\nat target, left alone: ${holds.join(', ') || 'none'}`);
 
-  return finish();
+  return flush(log);
 }
 
-function finish() {
-  const fs = require('fs');
-  if (process.env.GITHUB_STEP_SUMMARY) {
-    try { fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, log.join('\n') + '\n'); } catch (e) { }
+async function main() {
+  const list = accounts();
+  if (!list.length) throw new Error('missing Alpaca API keys (set ALPACA_KEY_ID and ALPACA_SECRET_KEY)');
+  if (list.length > 1) console.log(`trading ${list.length} accounts on the same brain\n`);
+  let failures = 0;
+  for (const creds of list) {
+    try {
+      await tradeAccount(creds);
+    } catch (e) {
+      failures++;
+      console.error(`${creds.label} failed: ` + (e.stack || e.message));
+      flush([`# AlphaLab paper bot - ${creds.label}`, 'run failed: ' + e.message]);
+    }
   }
+  if (failures) process.exit(1);   // surface a red run if any account errored, after trying them all
 }
 
-main().catch(e => {
-  console.error('bot failed: ' + (e.stack || e.message));
-  // still flush whatever we logged to the run summary before exiting non-zero
-  finish();
-  process.exit(1);
-});
+main().catch(e => { console.error('bot failed: ' + (e.stack || e.message)); process.exit(1); });

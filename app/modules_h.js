@@ -82,11 +82,12 @@ UI.callBadge = function (call, kind) {
 
 /* Build a full multi-asset target allocation. Pure-ish: reads the data layer + advisor but
    mutates nothing. Returns tickers, weights, dollars and share counts plus the reasoning. */
-UI.buildAllocation = function (capital, profileKey, nStocks) {
+UI.buildAllocation = function (capital, profileKey, nStocks, opts) {
   const f = AL.fmt;
   const regime = Q.marketRegime();
   const P = UI.RISK_PROFILES[profileKey] || UI.RISK_PROFILES.balanced;
   nStocks = nStocks || 5;
+  opts = opts || {};
   const inverted = regime.curve != null && regime.curve < 0;   // recession-warning yield curve
 
   // --- 1. bucket weights, tilted by the detected regime -------------------------------
@@ -118,6 +119,19 @@ UI.buildAllocation = function (capital, profileKey, nStocks) {
   const eqMix = defensive
     ? { core: 0.34, stocks: 0.14, growth: 0.08, intl: 0.16, em: 0.08, div: 0.20 }
     : { core: 0.30, stocks: 0.24, growth: 0.16, intl: 0.16, em: 0.10, div: 0.04 };
+  // Optional caller lever (the bot uses this): push single-stock conviction to a bigger share of the
+  // equity bucket, shrinking the index sub-sleeves proportionally to make room, so the book leans into
+  // real stock picks instead of sitting mostly in index ETFs. The bond and real-asset HEDGE sleeves are
+  // untouched, so raising this trades index beta for single-name alpha, not hedges for risk. Website
+  // callers omit opts and keep the original mix.
+  if (opts.stockShare > 0) {
+    const want = Math.min(0.85, opts.stockShare);
+    const restKeys = ['core', 'growth', 'intl', 'em', 'div'];
+    const restSum = restKeys.reduce((s, k) => s + eqMix[k], 0) || 1;
+    const scale = (1 - want) / restSum;
+    restKeys.forEach(k => { eqMix[k] *= scale; });
+    eqMix.stocks = want;
+  }
   const coreIdx = UI.pickSym(['SPY', 'VTI']);
   const growthIdx = UI.pickSym(['QQQ']);
   const intlIdx = UI.pickSym(['VEA', 'EFA']);
