@@ -2,7 +2,7 @@
 // Unit test for the pure intraday planner. No broker, no keys, no network: it feeds strategy.plan a
 // hand-built account and checks it makes the right call in each case. Run: node bot/test_strategy.js
 
-const { plan } = require('./strategy');
+const { plan, shortDollars } = require('./strategy');
 
 // Fixed config for the test so it stays deterministic no matter how the live config.js is tuned.
 const cfg = {
@@ -56,6 +56,43 @@ check('learned winner is sized up (x1.40 -> $476)',     by.WINNER && by.WINNER.s
 check('learned loser is sized down (x0.60 -> $204)',    by.LOSER && by.LOSER.side === 'BUY' && near(by.LOSER.dollars, 204));
 check('within-threshold name is left alone',            !by.HOLD && holds.includes('HOLD'));
 check('no phantom order for the exited name in buys',   !(by.OUT && by.OUT.side === 'BUY'));
+
+// --- the short side: signed targets (negative = short) exercise the long/short branches -------------
+// Alpaca reports a short as a NEGATIVE qty and market_value, which is exactly what the planner keys off.
+const sHeld = {
+  SADD:   { qty: -1,  marketValue: -100,  price: 100, plpc: 0, changeToday: 0 }, // small short, want bigger
+  SCOVER: { qty: -10, marketValue: -1000, price: 100, plpc: 0, changeToday: 0 }, // big short, want smaller
+  SEXIT:  { qty: -2,  marketValue: -200,  price: 100, plpc: 0, changeToday: 0 }, // short no longer wanted
+  FLIP_LS:{ qty: 1,   marketValue: 300,   price: 300, plpc: 0, changeToday: 0 }, // held long, now a short target
+  FLIP_SL:{ qty: -3,  marketValue: -300,  price: 100, plpc: 0, changeToday: 0 }, // held short, now a long target
+};
+const sTarget = {
+  SNEW: -1000,     // no position -> open a short
+  SADD: -1000,     // add to the short
+  SCOVER: -100,    // cover most of the short
+  FLIP_LS: -500,   // was long, now short -> close the long first
+  FLIP_SL: 500,    // was short, now long -> cover the short first
+  // SEXIT deliberately absent -> should be covered to flat
+};
+const s = plan({ nav, held: sHeld, targetD: sTarget, moves: {}, bias: {}, cfg });
+const sby = {};
+for (const a of s.actions) sby[a.sym] = a;
+
+console.log('\nlong/short planner');
+check('fresh short is opened by participation ($340)',      sby.SNEW && sby.SNEW.side === 'SELL' && sby.SNEW.kind === 'short' && near(sby.SNEW.dollars, 340));
+check('existing short is added to (short kind)',            sby.SADD && sby.SADD.side === 'SELL' && sby.SADD.kind === 'short' && near(sby.SADD.dollars, 306));
+check('oversized short is covered (buy kind cover)',        sby.SCOVER && sby.SCOVER.side === 'BUY' && sby.SCOVER.kind === 'cover' && near(sby.SCOVER.dollars, 306));
+check('short that left the book is closed to flat',         sby.SEXIT && sby.SEXIT.side === 'BUY' && sby.SEXIT.kind === 'close');
+check('long flipping to short is closed first, not shorted',sby.FLIP_LS && sby.FLIP_LS.side === 'SELL' && sby.FLIP_LS.kind === 'close');
+check('short flipping to long is covered first, not bought',sby.FLIP_SL && sby.FLIP_SL.side === 'BUY' && sby.FLIP_SL.kind === 'close');
+check('no dip-tilt or learning bias leaks onto shorts',     near(sby.SNEW.dollars, 340));   // moves/bias must not touch a short slice
+
+// shortDollars: the sleeve is split evenly into negative targets, and is off unless enabled + sized.
+const scfg = { SHORT_ENABLED: true, SHORT_SLEEVE: 0.20, N_SHORTS: 4 };
+const sd = shortDollars([{ sym: 'A', price: 10 }, { sym: 'B', price: 20 }], 2000, scfg);
+check('shortDollars splits the sleeve into negatives (-200 each)', near(sd.A, -200) && near(sd.B, -200));
+check('shortDollars is empty when disabled',                Object.keys(shortDollars([{ sym: 'A', price: 10 }], 2000, { SHORT_ENABLED: false, SHORT_SLEEVE: 0.2 })).length === 0);
+check('shortDollars is empty with a zero sleeve',           Object.keys(shortDollars([{ sym: 'A', price: 10 }], 2000, { SHORT_ENABLED: true, SHORT_SLEEVE: 0 })).length === 0);
 
 console.log(failures ? `\n${failures} check(s) failed` : '\nall checks passed');
 process.exit(failures ? 1 : 0);

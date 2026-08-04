@@ -111,7 +111,16 @@ async function tradeAccount(creds) {
   // whatever we hold, then the real pass that recomputes the whole book (regime, conviction, sizing)
   // on the current market. If the quote feed is down we simply keep the snapshot pass.
   const snap = engine.getTarget(nav, c.RISK_PROFILE, c.N_STOCKS, null, opts);
-  const universe = Array.from(new Set([...snap.holdings.map(h => h.sym), ...Object.keys(held)]));
+  // the SHORT book (the weakest names from the same brain), so the account runs a two-sided long/short.
+  let shortsList = [];
+  if (c.SHORT_ENABLED && c.SHORT_SLEEVE > 0 && c.N_SHORTS > 0) {
+    try { shortsList = engine.getShorts(c.N_SHORTS); } catch (e) { }
+  }
+  const universe = Array.from(new Set([
+    ...snap.holdings.map(h => h.sym),
+    ...shortsList.map(s => s.sym),   // quote the short names too, so their sizing uses live prices
+    ...Object.keys(held),
+  ]));
   let quoteMap = {};
   if (c.USE_LIVE_QUOTES) { try { quoteMap = await quotes.liveQuotes(universe); } catch (e) { } }
   const livePrices = quotes.pricesOf(quoteMap);
@@ -120,13 +129,23 @@ async function tradeAccount(creds) {
     ? engine.getTarget(nav, c.RISK_PROFILE, c.N_STOCKS, livePrices, opts)
     : snap;
 
+  // signed target book: longs positive (allocator), shorts negative (short sleeve). A name we are long
+  // is never also shorted; the long target wins if the engines somehow rate it both ways.
+  for (const s of shortsList) if (livePrices[s.sym] > 0) s.price = livePrices[s.sym];   // live-price the shorts
   const targetD = strategy.targetDollars(target.holdings, nav, c);
+  const shortD = strategy.shortDollars(shortsList, nav, c);
+  for (const sym in shortD) if (!(sym in targetD)) targetD[sym] = shortD[sym];
+
   const priceOf = {};
   for (const h of target.holdings) priceOf[h.sym] = h.price;
+  for (const s of shortsList) if (s.price > 0) priceOf[s.sym] = s.price;
   for (const s in livePrices) priceOf[s] = livePrices[s];
   for (const s in held) if (held[s].price > 0) priceOf[s] = held[s].price;   // Alpaca's current price wins
-  const deployD = Object.values(targetD).reduce((a, b) => a + b, 0);
-  say(`\ntarget: ${Object.keys(targetD).length} tradable lines, regime ${target.regimeLabel || 'n/a'}, deploying ${money(deployD)} of ${money(nav)} (${pct(deployD / nav)}), rest cash`);
+
+  const longD = Object.values(targetD).reduce((a, b) => a + (b > 0 ? b : 0), 0);
+  const grossShort = Object.values(targetD).reduce((a, b) => a + (b < 0 ? -b : 0), 0);
+  say(`\ntarget: ${Object.keys(targetD).length} lines, regime ${target.regimeLabel || 'n/a'} | long ${money(longD)} (${pct(longD / nav)}) / short ${money(grossShort)} (${pct(grossShort / nav)}) | net ${pct((longD - grossShort) / nav)}`);
+  if (grossShort > 0) say(`shorting the weakest: ${shortsList.map(s => s.sym).join(', ') || 'none cleared the bar'}`);
   say(`live: ${Object.keys(livePrices).length}/${universe.length} quotes, ${target.liveInjected || 0} fed into the engine`);
 
   // --- 5. learn from past trades: bias sizing toward names that have actually paid off ------------
@@ -137,64 +156,102 @@ async function tradeAccount(creds) {
     say(`learning from ${learnNotes.length} name(s): ${top}`);
   }
 
-  // --- 6. plan the run: stops, exits, take-profits, and a learning-weighted paced slice ----------
+  // --- 6. plan the run: stops, exits, flips, take-profits, and a paced slice toward the signed target
   const { actions, holds } = strategy.plan({ nav, held, targetD, moves, bias, cfg: c });
-  const sells = actions.filter(a => a.side === 'SELL');
-  const buys = actions.filter(a => a.side === 'BUY');
 
-  // --- 7. execute. Sells first so their proceeds fund the buys, then buys. -----------------------
-  // Every order is wrapped so one rejection (not fractionable, not tradable, wash trade, etc.) never
-  // stops the rest of the run.
+  // --- 7. execute. Reduce-risk orders first (close, trim, cover) so exits and covers free up buying
+  // power, then add-risk orders (short, buy). Every order is wrapped so one rejection (not shortable,
+  // wash trade, not tradable, etc.) never stops the rest of the run.
   const done = [];
   const assetCache = {};
-  const isFractionable = async sym => {
+  const assetInfo = async sym => {
     if (sym in assetCache) return assetCache[sym];
-    try { const a = await alpaca.asset(sym); assetCache[sym] = { tradable: a.tradable, fractionable: a.fractionable }; }
-    catch (e) { assetCache[sym] = { tradable: false, fractionable: false, err: e.message }; }
+    try {
+      const a = await alpaca.asset(sym);
+      assetCache[sym] = { tradable: a.tradable, fractionable: a.fractionable, shortable: a.shortable, easyToBorrow: a.easy_to_borrow };
+    } catch (e) { assetCache[sym] = { tradable: false, fractionable: false, shortable: false, easyToBorrow: false, err: e.message }; }
     return assetCache[sym];
   };
+  const byKind = k => actions.filter(a => a.kind === k);
+  const ordered = [...byKind('close'), ...byKind('trim'), ...byKind('cover'), ...byKind('short'), ...byKind('buy')];
 
-  for (const s of sells) {
-    const pos = held[s.sym];
-    if (s.kind === 'close' || !pos) {
-      if (DRY) { done.push(`SELL ALL ${s.sym} (${s.reason})`); continue; }
-      try { await alpaca.closePosition(s.sym); done.push(`SELL ALL ${s.sym} (${s.reason})`); }
-      catch (e) { done.push(`skip close ${s.sym}: ${e.message}`); }
+  for (const act of ordered) {
+    const sym = act.sym;
+    const pos = held[sym];
+    const px = priceOf[sym] || (pos && pos.price) || 0;
+
+    // close: exit a position entirely, long or short (Alpaca's DELETE buys a short back to flat)
+    if (act.kind === 'close') {
+      if (DRY) { done.push(`CLOSE ${sym} (${act.reason})`); continue; }
+      try { await alpaca.closePosition(sym); done.push(`CLOSE ${sym} (${act.reason})`); }
+      catch (e) { done.push(`skip close ${sym}: ${e.message}`); }
       continue;
     }
-    // partial trim (take-profit or rebalance down): sell a share count for the dollar amount
-    const a = await isFractionable(s.sym);
-    let qty = s.dollars / pos.price;
-    qty = Math.min(qty, pos.qty);
-    if (!a.fractionable) qty = Math.floor(qty);
-    else qty = Math.floor(qty * 1e6) / 1e6;   // trim precision so we never try to sell more than we own
-    if (!(qty > 0)) { done.push(`skip trim ${s.sym}: qty rounds to 0`); continue; }
-    if (qty >= pos.qty * 0.999) {   // if we would dump almost all of it, close it cleanly instead
-      if (DRY) { done.push(`SELL ALL ${s.sym} (${s.reason}, ~full)`); continue; }
-      try { await alpaca.closePosition(s.sym); done.push(`SELL ALL ${s.sym} (${s.reason}, ~full)`); }
-      catch (e) { done.push(`skip ${s.sym}: ${e.message}`); }
+
+    // trim: reduce a LONG by a dollar amount (fractional where the asset allows it)
+    if (act.kind === 'trim') {
+      if (!pos || pos.qty <= 0) { done.push(`skip trim ${sym}: no long position`); continue; }
+      const a = await assetInfo(sym);
+      let qty = Math.min(act.dollars / pos.price, pos.qty);
+      qty = a.fractionable ? Math.floor(qty * 1e6) / 1e6 : Math.floor(qty);
+      if (!(qty > 0)) { done.push(`skip trim ${sym}: qty rounds to 0`); continue; }
+      if (qty >= pos.qty * 0.999) {   // dumping almost all of it: close cleanly instead
+        if (DRY) { done.push(`SELL ALL ${sym} (${act.reason}, ~full)`); continue; }
+        try { await alpaca.closePosition(sym); done.push(`SELL ALL ${sym} (${act.reason}, ~full)`); }
+        catch (e) { done.push(`skip ${sym}: ${e.message}`); }
+        continue;
+      }
+      if (DRY) { done.push(`SELL ${sym} ${qty} (~${money(act.dollars)}, ${act.reason})`); continue; }
+      try { await alpaca.submitOrder({ symbol: sym, side: 'sell', qty }); done.push(`SELL ${sym} ${qty} (~${money(act.dollars)}, ${act.reason})`); }
+      catch (e) { done.push(`skip trim ${sym}: ${e.message}`); }
       continue;
     }
-    if (DRY) { done.push(`SELL ${s.sym} ${qty} (~${money(s.dollars)}, ${s.reason})`); continue; }
-    try { await alpaca.submitOrder({ symbol: s.sym, side: 'sell', qty }); done.push(`SELL ${s.sym} ${qty} (~${money(s.dollars)}, ${s.reason})`); }
-    catch (e) { done.push(`skip sell ${s.sym}: ${e.message}`); }
-  }
 
-  for (const b of buys) {
-    const a = await isFractionable(b.sym);
-    if (!a.tradable) { done.push(`skip buy ${b.sym}: not tradable on Alpaca`); continue; }
+    // cover: reduce a SHORT by buying back whole shares (a short is always a whole-share position)
+    if (act.kind === 'cover') {
+      if (!pos || pos.qty >= 0) { done.push(`skip cover ${sym}: not short`); continue; }
+      const shortQty = -pos.qty;
+      let qty = px > 0 ? Math.min(Math.ceil(act.dollars / px), shortQty) : 0;
+      if (!(qty > 0)) { done.push(`skip cover ${sym}: qty rounds to 0`); continue; }
+      if (qty >= shortQty) {   // covering the whole thing: close cleanly
+        if (DRY) { done.push(`BUY TO COVER ALL ${sym} (${act.reason})`); continue; }
+        try { await alpaca.closePosition(sym); done.push(`BUY TO COVER ALL ${sym} (${act.reason})`); }
+        catch (e) { done.push(`skip cover ${sym}: ${e.message}`); }
+        continue;
+      }
+      if (DRY) { done.push(`BUY TO COVER ${sym} ${qty} (~${money(qty * px)}, ${act.reason})`); continue; }
+      try { await alpaca.submitOrder({ symbol: sym, side: 'buy', qty }); done.push(`BUY TO COVER ${sym} ${qty} (~${money(qty * px)}, ${act.reason})`); }
+      catch (e) { done.push(`skip cover ${sym}: ${e.message}`); }
+      continue;
+    }
+
+    // short: open or add to a SHORT. Whole shares only, and only on names Alpaca reports as shortable
+    // and easy to borrow; otherwise skip it cleanly instead of eating a rejection.
+    if (act.kind === 'short') {
+      const a = await assetInfo(sym);
+      if (!a.tradable) { done.push(`skip short ${sym}: not tradable`); continue; }
+      if (!a.shortable || !a.easyToBorrow) { done.push(`skip short ${sym}: not shortable/borrowable`); continue; }
+      const qty = px > 0 ? Math.floor(act.dollars / px) : 0;
+      if (!(qty > 0)) { done.push(`skip short ${sym}: ${money(act.dollars)} < 1 share at ${money(px)}`); continue; }
+      if (DRY) { done.push(`SHORT ${sym} ${qty} (~${money(qty * px)}, ${act.reason})`); continue; }
+      try { await alpaca.submitOrder({ symbol: sym, side: 'sell', qty }); done.push(`SHORT ${sym} ${qty} (~${money(qty * px)}, ${act.reason})`); }
+      catch (e) { done.push(`skip short ${sym}: ${e.message}`); }
+      continue;
+    }
+
+    // buy: open or add to a LONG (fractional dollars where allowed, else whole shares)
+    const a = await assetInfo(sym);
+    if (!a.tradable) { done.push(`skip buy ${sym}: not tradable on Alpaca`); continue; }
     if (a.fractionable) {
-      if (DRY) { done.push(`BUY ${b.sym} ${money(b.dollars)} (${b.reason})`); continue; }
-      try { await alpaca.submitOrder({ symbol: b.sym, side: 'buy', notional: b.dollars }); done.push(`BUY ${b.sym} ${money(b.dollars)} (${b.reason})`); }
-      catch (e) { done.push(`skip buy ${b.sym}: ${e.message}`); }
+      if (DRY) { done.push(`BUY ${sym} ${money(act.dollars)} (${act.reason})`); continue; }
+      try { await alpaca.submitOrder({ symbol: sym, side: 'buy', notional: act.dollars }); done.push(`BUY ${sym} ${money(act.dollars)} (${act.reason})`); }
+      catch (e) { done.push(`skip buy ${sym}: ${e.message}`); }
     } else {
-      // no fractional support: fall back to as many whole shares as the dollar slice allows
-      const px = priceOf[b.sym];
-      const qty = px > 0 ? Math.floor(b.dollars / px) : 0;
-      if (!(qty > 0)) { done.push(`skip buy ${b.sym}: ${money(b.dollars)} < 1 share`); continue; }
-      if (DRY) { done.push(`BUY ${b.sym} ${qty} shares (~${money(qty * px)}, ${b.reason})`); continue; }
-      try { await alpaca.submitOrder({ symbol: b.sym, side: 'buy', qty }); done.push(`BUY ${b.sym} ${qty} shares (~${money(qty * px)}, ${b.reason})`); }
-      catch (e) { done.push(`skip buy ${b.sym}: ${e.message}`); }
+      const qty = px > 0 ? Math.floor(act.dollars / px) : 0;
+      if (!(qty > 0)) { done.push(`skip buy ${sym}: ${money(act.dollars)} < 1 share`); continue; }
+      if (DRY) { done.push(`BUY ${sym} ${qty} shares (~${money(qty * px)}, ${act.reason})`); continue; }
+      try { await alpaca.submitOrder({ symbol: sym, side: 'buy', qty }); done.push(`BUY ${sym} ${qty} shares (~${money(qty * px)}, ${act.reason})`); }
+      catch (e) { done.push(`skip buy ${sym}: ${e.message}`); }
     }
   }
 

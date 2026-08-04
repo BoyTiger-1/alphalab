@@ -97,7 +97,47 @@ function getTarget(capital, profile, nStocks, livePrices, opts) {
   };
 }
 
-module.exports = { boot, getTarget, applyLivePrices };
+// The SHORT book: the weakest names the same six engines produce. A real quant desk runs both sides,
+// so this is the mirror image of the long picker. It scores the large, liquid universe with the exact
+// same brain (decision engine + fused conviction), keeps only genuine weakness (a SELL call or clearly
+// negative conviction), takes the worst names one per sector, and returns them with a live-injected
+// price. The bot only actually shorts the ones Alpaca reports as shortable and easy to borrow; the rest
+// are skipped, never forced. Returns [{ sym, name, price, conv, call }].
+function getShorts(n) {
+  boot();
+  if (!(n > 0)) return [];
+  let scored;
+  try { scored = UI.scoreStocks(); } catch (e) { return []; }
+  if (!scored || !scored.rows) return [];
+  // The short pool is the WEAK TAIL of the universe. scoreStocks returns rows sorted strongest-first by
+  // advisor score, so the best short candidates are at the very end; take the lowest-scored large-caps
+  // and then re-rank that pool by the full fused conviction.
+  const large = scored.rows.filter(r => { try { return UI.isLargeCap(r); } catch (e) { return false; } });
+  const pool = large.slice().sort((a, b) => (a.score || 0) - (b.score || 0)).slice(0, 200);
+  const ranked = [];
+  for (const r of pool) {
+    let call = null; try { call = UI.decision(r.sym).call; } catch (e) { }
+    let sc = null; try { sc = UI.symConviction(r.sym, scored); } catch (e) { }
+    const conv = sc && typeof sc.conviction === 'number' ? sc.conviction : (typeof r.score === 'number' ? r.score : 0);
+    if (call === 'SELL' || conv < 0) ranked.push({ r, conv, call });   // short only real weakness
+  }
+  ranked.sort((a, b) => a.conv - b.conv);   // most negative conviction first = best short
+  const out = [], seen = {};
+  for (const item of ranked) {
+    if (out.length >= n) break;
+    const r = item.r;
+    let sec = r.sector; try { if (UI.canonSector) sec = UI.canonSector(r.sector); } catch (e) { }
+    if (sec && seen[sec]) continue;   // spread the shorts across sectors, like the long book
+    const ser = AL.getSeries(r.sym);
+    const price = ser && ser.values && ser.values.length ? ser.values[ser.values.length - 1] : 0;
+    if (!(price > 0)) continue;
+    if (sec) seen[sec] = true;
+    out.push({ sym: r.sym, name: ser && ser.name ? ser.name : r.sym, price, conv: item.conv, call: item.call });
+  }
+  return out;
+}
+
+module.exports = { boot, getTarget, getShorts, applyLivePrices };
 
 // Direct run: print the target book for the configured starting balance. This is a full dry run of
 // the brain with no broker and no keys, so you can see exactly what the bot intends before it ever
@@ -121,4 +161,16 @@ if (require.main === module) {
   }
   console.log('-'.repeat(74));
   console.log(`deployed ${money(deployed)}   cash ${money(cfg.STARTING_BALANCE - deployed)}   (${t.holdings.length} lines)\n`);
+
+  if (cfg.SHORT_ENABLED && cfg.SHORT_SLEEVE > 0 && cfg.N_SHORTS > 0) {
+    const shorts = getShorts(cfg.N_SHORTS);
+    const perShort = shorts.length ? (cfg.SHORT_SLEEVE * cfg.STARTING_BALANCE) / shorts.length : 0;
+    console.log(`SHORT book  (gross ${(cfg.SHORT_SLEEVE * 100).toFixed(0)}% of NAV = ${money(cfg.SHORT_SLEEVE * cfg.STARTING_BALANCE)}, ${shorts.length} names)`);
+    console.log('-'.repeat(74));
+    for (const s of shorts) {
+      console.log(`${s.sym.padEnd(8)} ${money(perShort).padStart(9)}  ${(s.call || '-').padEnd(5)} conv ${s.conv.toFixed(2)}  short ${s.name}`);
+    }
+    if (!shorts.length) console.log('(no names met the short threshold this run)');
+    console.log('-'.repeat(74) + '\n');
+  }
 }

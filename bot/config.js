@@ -28,6 +28,23 @@ module.exports = {
   // trades index beta for single-name alpha, it does not remove hedges. 0 keeps the original mix.
   SINGLE_STOCK_SHARE: 0.55,
 
+  // SHORT SELLING. A real quant desk runs both sides of the book: long the strongest names, short the
+  // weakest, so the account makes money on the losers too and the shorts hedge the longs (they fall
+  // when the market falls). When this is on, the bot builds a SHORT book from the exact same six-engine
+  // brain, the mirror image of the long picker: the names the decision engine rates SELL or that carry
+  // clearly negative fused conviction, one per sector. It shorts them on top of the long book, so each
+  // account runs a genuine long/short (net long, hedged by the shorts). Both paper accounts short,
+  // because both are shorting-enabled margin accounts; the 'risk' mode below just shorts harder.
+  //
+  // Shorts are placed as whole shares (Alpaca does not allow fractional shorts) and only on names Alpaca
+  // reports as shortable and easy to borrow. Anything not borrowable is skipped and logged, never forced.
+  // This is real, uncapped risk: a short that keeps rising loses money without a natural ceiling, and raw
+  // mode has no stop-loss. That is the point of the "take real risk" ask; the sleeve size below bounds
+  // how much of the book is short so a single squeeze cannot wipe the account in one run.
+  SHORT_ENABLED: true,
+  SHORT_SLEEVE: 0.25,   // gross short as a fraction of equity. 0.25 = short ~25% of NAV, split across N_SHORTS
+  N_SHORTS: 4,          // how many weak names to short, one per sector (capped by how many clear the bar)
+
   // Per-account risk MODES for the competition. Each account is traded under one mode, and a mode is
   // just a set of overrides on the knobs in this file, so the paper accounts run different strategies
   // and race each other on real P&L. 'hedged' is the diversified full-conviction book with the bond and
@@ -40,6 +57,8 @@ module.exports = {
       RISK_PROFILE: 'aggressive',   // eq 0.72 / bond 0.08 / real 0.12: much lighter on the safe sleeve
       N_STOCKS: 5,                  // few, concentrated single-name bets
       SINGLE_STOCK_SHARE: 0.85,     // the equity bucket is almost all single-stock conviction
+      SHORT_SLEEVE: 0.50,           // shorts twice as hard: ~50% gross short on top of the long book
+      N_SHORTS: 6,                  // more short names, so the short side is a real book, not a token hedge
     },
   },
 
