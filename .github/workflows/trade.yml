@@ -54,6 +54,14 @@ jobs:
           FINNHUB_KEY: ${{ secrets.FINNHUB_KEY }}   # optional: your own live-quote key, else the public one is used
           DRY_RUN: ${{ github.event.inputs.dry_run == 'true' && '1' || '' }}
         run: |
+          # Preflight: without the paper keys the bot cannot reach the account and every iteration
+          # would fail identically. Fail the whole run loudly (a red X in the Actions tab) instead of
+          # looping for 14 minutes and reporting a misleading green. Add the two secrets under
+          # Settings -> Secrets and variables -> Actions, then re-run. See bot/README.md.
+          if [ -z "$ALPACA_KEY_ID" ] || [ -z "$ALPACA_SECRET_KEY" ]; then
+            echo "::error title=Alpaca keys not set::Add ALPACA_KEY_ID and ALPACA_SECRET_KEY as repository secrets (Settings -> Secrets and variables -> Actions), then re-run. See bot/README.md."
+            exit 1
+          fi
           if [ "${{ github.event_name }}" = "schedule" ]; then
             # supervisor: trade every 60s for ~14 minutes, then let the next scheduled run take over
             end=$(( $(date +%s) + 840 ))
