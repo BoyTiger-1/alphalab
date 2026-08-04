@@ -184,7 +184,7 @@ AL.lastCloseRaw = function (sym) { const s = AL.getSeries(sym); return s ? s.val
        live only if the user pastes their own free Finnhub API key, kept in localStorage and never
        committed. Without a key, equities simply stay at the last close, clearly labeled EOD. */
 AL.live = {
-  px: {}, chg: {},          // sym -> latest live price / % change vs prior close
+  px: {}, chg: {}, eod: {}, // sym -> latest live price / % change vs prior close / remembered true EOD close
   ts: 0, timer: null, running: false,
   // a key pasted into the LIVE badge (localStorage) always wins; otherwise fall back to the shared
   // key baked into the build (window.ALPHALAB_LIVE_KEY, from app/livekey.js) so live quotes work
@@ -199,7 +199,11 @@ AL.live = {
         const r = await fetch(`https://api.exchange.coinbase.com/products/${sym}/ticker`, { cache: 'no-store' });
         if (!r.ok) return;
         const p = parseFloat((await r.json()).price);
-        if (p > 0) { this.px[sym] = p; const lc = AL.lastCloseRaw(sym); if (lc) this.chg[sym] = p / lc - 1; }
+        // day change is measured against the TRUE settled close, not the last bar: once we inject a
+        // live tick into the series (below), lastCloseRaw would return that tick and the change would
+        // collapse to a per-minute delta. eod[sym] holds the pristine close once injection has run.
+        const lc = (this.eod[sym] != null ? this.eod[sym] : AL.lastCloseRaw(sym));
+        if (p > 0) { this.px[sym] = p; if (lc) this.chg[sym] = p / lc - 1; }
       } catch (e) { /* transient, keep the last good tick */ }
     }));
   },
@@ -230,8 +234,41 @@ AL.live = {
       } catch (e) { /* keep last */ }
     }
   },
+  // Feed the live ticks back INTO the engine's series so the whole decision brain, the market regime,
+  // the six-engine conviction, the target allocation and its sizing, recomputes on the live market
+  // every minute, exactly like the autonomous paper bot does, instead of only the display tiles. We
+  // overwrite just the last (most-recent) bar of each live symbol with its live price and remember
+  // the settled close, so this is fully reversible and the bad-tick guard always compares against the
+  // real EOD close, not a prior tick. AL.returns is derived from the series values and memoized, so we
+  // drop that one cache per touched symbol or momentum / vol / regime would keep reading yesterday.
+  injectEngine() {
+    let n = 0;
+    for (const sym in this.px) {
+      const px = this.px[sym];
+      if (!(px > 0)) continue;
+      const s = AL.getSeries(sym);
+      if (!s || !s.values || !s.values.length) continue;
+      const i = s.values.length - 1;
+      if (this.eod[sym] == null) this.eod[sym] = s.values[i];       // capture the pristine close once
+      const base = this.eod[sym];
+      if (!(base > 0) || px < base * 0.6 || px > base * 1.4) continue;   // reject an obviously bad tick
+      if (s.values[i] !== px) { s.values[i] = px; AL._cache.delete('ret:' + sym); n++; }
+    }
+    return n;
+  },
+  // Put the settled end-of-day closes back. Used when the user removes their Finnhub key so equities
+  // stop being live: without this the engine would freeze on the last intraday tick instead of
+  // returning to clean EOD bars.
+  restoreEngine() {
+    for (const sym in this.eod) {
+      const s = AL.getSeries(sym);
+      if (s && s.values && s.values.length) { s.values[s.values.length - 1] = this.eod[sym]; AL._cache.delete('ret:' + sym); }
+    }
+    this.eod = {};
+  },
   async poll() {
     try { await Promise.all([this._fetchCrypto(), this._fetchEquities()]); } catch (e) { }
+    this.injectEngine();                    // feed the ticks into the engine before any view repaints
     this.ts = Date.now();
     AL.bus.emit('live:update', { ts: this.ts });
   },

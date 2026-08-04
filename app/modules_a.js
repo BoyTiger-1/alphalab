@@ -190,7 +190,7 @@ UI.manageLiveKey = function () {
   const cur = AL.live.key();
   if (cur) {
     if (confirm('Live stock quotes are on with your Finnhub key. Remove it? Crypto stays live either way.')) {
-      AL.live.setKey(null); AL.live.px = {}; AL.live.chg = {}; AL.live.poll(); UI.paintLiveBadge();
+      AL.live.setKey(null); AL.live.px = {}; AL.live.chg = {}; AL.live.restoreEngine(); AL.live.poll(); UI.paintLiveBadge();
     }
     return;
   }

@@ -658,7 +658,7 @@ UI.def('command', 'Competition Center', '◎', 'Start Here', function (el, state
     else if (b.orders.length) plan.push(`Place the ${b.orders.length} rebalance order${b.orders.length > 1 ? 's' : ''} below to steer toward your plan (drift at the extreme is ${f.pct(b.maxDrift, 1)}).`);
     if (b.opportunities.length) plan.push(`Highest-conviction ideas not in your book: ${b.opportunities.map(a => `<b>${a.sym}</b>`).join(', ')}. Confirm each in the Decision engine before adding.`);
     if (b.risks.length) plan.push(`Concentration watch: ${b.risks.map(r => `<b>${r.sym}</b> is ${f.pct(r.weight, 0)} of the book`).join('; ')}. A single position this large drives most of your risk, consider trimming it into the plan.`);
-    plan.push('Re-open this briefing each trading day; it recomputes on the latest close and after every data refresh.');
+    plan.push('Re-open this briefing each trading day; it recomputes on live prices during market hours, the latest close otherwise, and after every data refresh.');
 
     body.innerHTML = `
       <div class="tiles" style="margin-bottom:12px">
