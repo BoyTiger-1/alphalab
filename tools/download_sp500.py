@@ -30,19 +30,28 @@ def constituents():
     if os.path.exists(cache):
         return json.load(open(cache, encoding="utf-8"))
     html = fetch("https://en.wikipedia.org/wiki/List_of_S%26P_500_companies")
-    # each row: exchange-quote link (ticker), company wikilink (name), then the GICS sector cell
-    rows = re.findall(
-        r'class="external text"[^>]*>([A-Z][A-Z0-9.]{0,6})</a></td>\s*'
-        r'<td[^>]*><a[^>]*title="([^"]+)"[^>]*>[^<]*</a></td><td[^>]*>([^<]+)</td>', html)
-    out = [{"sym": s.replace(".", "-"), "name": n, "sector": sec.strip()} for s, n, sec in rows]
+    # walk the constituents table row by row; Wikipedia's markup (ids, newlines, attribute
+    # order) changes often, so read cell text instead of pattern-matching the raw html
+    start = html.find('id="constituents"')
+    table = html[start:html.find("</table>", start)] if start >= 0 else ""
+    out = []
+    for tr in re.findall(r"<tr[^>]*>(.*?)</tr>", table, re.S):
+        cells = [re.sub(r"<[^>]+>", "", c).strip()
+                 for c in re.findall(r"<td[^>]*>(.*?)</td>", tr, re.S)]
+        if len(cells) < 3 or not re.fullmatch(r"[A-Z][A-Z0-9.]{0,6}", cells[0]):
+            continue
+        name = cells[1].replace("&amp;", "&").replace("&#39;", "'")
+        out.append({"sym": cells[0].replace(".", "-"), "name": name, "sector": cells[2]})
     # the changes table at the bottom matches the same pattern; the constituent table comes first
     seen, dedup = set(), []
     for r in out:
         if r["sym"] not in seen:
             seen.add(r["sym"])
             dedup.append(r)
-    json.dump(dedup, open(cache, "w", encoding="utf-8"))
     print(f"constituent list: {len(dedup)} tickers")
+    if len(dedup) < 400:
+        raise SystemExit(f"constituent scrape looks broken ({len(dedup)} rows), keeping previous sp500.js")
+    json.dump(dedup, open(cache, "w", encoding="utf-8"))
     return dedup
 
 
@@ -110,6 +119,8 @@ def main():
                           "c": [int(round(v * k10)) for v in vals]}
         if (i + 1) % 50 == 0:
             print(f"{i + 1}/{len(cons)} downloaded")
+    if len(cols) < 400:
+        raise SystemExit(f"only {len(cols)} tickers encoded, keeping previous sp500.js")
     bundle = {"asof": wcal[-1], "wcal": wcal, "cols": cols}
     js = "window.ALPHALAB_SP500=" + json.dumps(bundle, separators=(",", ":")) + ";"
     open(os.path.join(ROOT, "data", "sp500.js"), "w", encoding="utf-8").write(js)

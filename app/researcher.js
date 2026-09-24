@@ -144,7 +144,7 @@ RS.runExperiment = function (hypo, done) {
 RS._dataAudit = function (hypo) {
   if (hypo.kind === 'strategy') {
     const def = hypo.entry.def;
-    const syms = def.kind === 'single' ? [def.sym] : def.kind === 'pair' ? def.syms : def.kind === 'ml' ? [def.sym] : def.universe;
+    const syms = def.kind === 'single' ? [def.sym] : def.kind === 'pair' ? def.syms : def.kind === 'ml' ? [def.sym] : def.kind === 'meta' ? [S.byId[def.base].def.sym || 'SPY'] : def.universe;
     const spans = syms.map(s => { const ser = AL.getSeries(s); return `${s}: ${ser.dates[0]}→${ser.dates[ser.dates.length - 1]} (${ser.values.length} obs)`; });
     return spans.join('; ');
   }

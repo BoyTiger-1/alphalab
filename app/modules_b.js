@@ -171,6 +171,7 @@ UI.def('stratDetail', 'Strategy', '⚙', 'Autonomous Research', function (el, st
           <div class="kv"><span class="k">Directional hit rate</span><span class="v">${f.pct(r.mlDiag.hit)}</span></div>
           <div class="kv"><span class="k">Predictions scored</span><span class="v">${r.mlDiag.n.toLocaleString()}</span></div>
           <div class="kv"><span class="k">Walk-forward refits</span><span class="v">${r.wf.folds.length}</span></div>`)}</div>` : '')}
+        <div id="sd-twin"></div>
       </div>`;
     C.line(document.getElementById('sd-eq'), [
       { name: entry.name.slice(0, 22), dates: r.dates, values: r.equity.slice(1), color: C.SERIES[0], width: 2 },
@@ -191,6 +192,7 @@ UI.def('stratDetail', 'Strategy', '⚙', 'Autonomous Research', function (el, st
       if (items.length) C.bars(document.getElementById('sd-w'), items, { horizontal: true, pct: true, sorted: true });
     }
     if (r.mlDiag) C.bars(document.getElementById('sd-q'), r.mlDiag.quintiles.map((q, i) => ({ label: 'Q' + (i + 1), value: q })), { pct: true });
+    if (UI.twinPanel && entry.def.kind !== 'meta') UI.twinPanel(document.getElementById('sd-twin'), entry, r);
   };
   document.getElementById('sd-run').addEventListener('click', () => {
     el.querySelectorAll('[data-p]').forEach(inp => { const v = parseFloat(inp.value); if (isFinite(v)) params[inp.dataset.p] = v; });

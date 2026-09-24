@@ -16,6 +16,7 @@ PARTS = {
     "/*__FACTORS__*/": os.path.join(APP, "factors.js"),
     "/*__ML__*/": os.path.join(APP, "ml.js"),
     "/*__STRATEGIES__*/": os.path.join(APP, "strategies.js"),
+    "/*__MLZOO__*/": os.path.join(APP, "mlzoo.js"),
     "/*__REGISTRY__*/": os.path.join(APP, "registry.js"),
     "/*__RESEARCHER__*/": os.path.join(APP, "researcher.js"),
     "/*__MODULES_A__*/": os.path.join(APP, "modules_a.js"),
@@ -26,6 +27,9 @@ PARTS = {
     "/*__MODULES_F__*/": os.path.join(APP, "modules_f.js"),
     "/*__MODULES_G__*/": os.path.join(APP, "modules_g.js"),
     "/*__MODULES_H__*/": os.path.join(APP, "modules_h.js"),
+    "/*__MODULES_I__*/": os.path.join(APP, "modules_i.js"),
+    "/*__FX__*/": os.path.join(APP, "fx.js"),
+    "/*__MLCACHE__*/": os.path.join(ROOT, "data", "mlcache.js"),
     "/*__TUTORIAL__*/": os.path.join(APP, "tutorial.js"),
     "/*__SP500__*/": os.path.join(ROOT, "data", "sp500.js"),
     "/*__MARKET__*/": os.path.join(ROOT, "data", "market.js"),
@@ -35,9 +39,16 @@ PARTS = {
 }
 # parts that may be absent in a minimal build. livekey.js is optional so a checkout without it still
 # builds; the app then just falls back to a key pasted into the LIVE badge.
-OPTIONAL = {"/*__ALTDATA__*/", "/*__SP500__*/", "/*__MARKET__*/", "/*__FUND__*/", "/*__NEWS__*/", "/*__LIVEKEY__*/"}
+OPTIONAL = {"/*__MLCACHE__*/", "/*__ALTDATA__*/", "/*__SP500__*/", "/*__MARKET__*/", "/*__FUND__*/", "/*__NEWS__*/", "/*__LIVEKEY__*/"}
 
 html = open(os.path.join(APP, "index.html"), encoding="utf-8").read()
+
+# build stamp: the app polls version.json and offers a reload when a newer build is deployed
+import json, re, datetime
+_m = re.search(r'"asof":"(\d{4}-\d{2}-\d{2})"', open(os.path.join(ROOT, "data", "bundle.js"), encoding="utf-8").read(200_000_000))
+BUILD = {"asof": _m.group(1) if _m else None, "built": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
+html = html.replace("/*__BUILD__*/", "window.ALPHALAB_BUILD=" + json.dumps(BUILD) + ";")
+json.dump(BUILD, open(os.path.join(DIST, "version.json"), "w"))
 for marker, path in PARTS.items():
     if marker in OPTIONAL and not os.path.exists(path):
         html = html.replace(marker, f"/* optional bundle missing: {os.path.basename(path)} */")

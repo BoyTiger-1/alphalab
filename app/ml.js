@@ -196,15 +196,28 @@ function gauss(A) { // solve augmented [n x n+1]
 }
 
 /* ---------- walk-forward engine ---------- */
-ML.walkForward = function (feat, modelId, p = {}) {
+ML.walkForward = function (feat, modelId, p0 = {}) {
+  // copy params so warm-start state (deep nets) never leaks between runs
+  const p = { ...p0, horizon: p0.horizon ?? feat.horizon };
   const { X, y, dates } = feat;
-  const minTrain = p.minTrain ?? 750, refit = p.refit ?? 63;
+  const M = ML.models[modelId];
+  const minTrain = p.minTrain ?? 750, refit = p.refit ?? (M && M.refit) ?? 63;
+  // purge: a training label at row j needs the price at j+horizon, so only rows whose label has
+  // fully resolved before today may be used (Lopez de Prado, AFML ch. 7)
+  const purge = p.purge ?? feat.horizon ?? 0;
   const preds = new Array(X.length).fill(NaN);
   let model = null, st = null, fitAt = -minTrain;
   const folds = [];
-  for (let i = minTrain; i < X.length; i++) {
+  // resume: predictions for rows [0, resume.n) come from the prebuilt cache (same code, run in CI);
+  // only the newest rows are predicted here, after one refit on everything resolved so far
+  let i0 = minTrain;
+  if (p.resume && p.resume.preds) {
+    for (let i = 0; i < Math.min(p.resume.n, X.length); i++) preds[i] = p.resume.preds[i];
+    i0 = Math.max(minTrain, p.resume.n); fitAt = -Infinity;
+  }
+  for (let i = i0; i < X.length; i++) {
     if (i - fitAt >= refit) {
-      const Xtr = X.slice(0, i), ytr = y.slice(0, i);
+      const cut = Math.max(1, i - purge), Xtr = X.slice(0, cut), ytr = y.slice(0, cut);
       st = colStats(Xtr);
       const Xs = standardize(Xtr, st);
       if (modelId === 'ensemble') {
@@ -213,7 +226,7 @@ ML.walkForward = function (feat, modelId, p = {}) {
         model = ML.models[modelId].fit(Xs, ytr, p);
       }
       fitAt = i;
-      folds.push({ at: dates[i], trainN: i });
+      folds.push({ at: dates[i], trainN: cut, losses: model.losses ? model.losses.slice() : null });
     }
     const xr = standardize([X[i]], st);
     if (modelId === 'ensemble') {
@@ -224,7 +237,7 @@ ML.walkForward = function (feat, modelId, p = {}) {
       preds[i] = model.predict(xr)[0];
     }
   }
-  return { preds, folds, minTrain };
+  return { preds, folds, minTrain, purge, refit };
 };
 
 /* diagnostics: IC of predictions, hit rate, quantile analysis */
@@ -265,19 +278,41 @@ ML.permImportance = function (feat, modelId, p = {}) {
 
 /* ---------- strategy adapter (used by S.run for kind:'ml') ---------- */
 ML._stratCache = new Map();
+ML._predCache = new Map();
+/* prebuilt walk-forward predictions (data/mlcache.js, produced by tools/build_mlcache.js with this
+   exact code). Used only if the cached rows line up with today's feature rows date-for-date. */
+ML.cacheKey = (entry, params, from) => entry.id + JSON.stringify(params) + from;
+ML.cached = function (pkey, feat) {
+  const C = window.ALPHALAB_MLCACHE, c = C && C.preds && C.preds[pkey];
+  if (!c || c.n > feat.X.length || feat.dates[c.n - 1] !== c.last || feat.dates[0] !== c.first) return null;
+  return { n: c.n, preds: c.p.split(',').map(v => v === '' ? NaN : +v), folds: (c.folds || []).map(([at, trainN]) => ({ at, trainN })) };
+};
 ML.runStrategy = function (entry, opts = {}) {
   const def = entry.def;
-  const key = entry.id + JSON.stringify(opts.params || {}) + (opts.costBps || '');
+  const params = { ...(def.params || {}), ...(opts.params || {}) };
+  const from = opts.from || entry.from || '2005-01-01';
+  const pkey = entry.id + JSON.stringify(params) + from;
+  const key = pkey + '|' + (opts.costBps ?? '');
   if (ML._stratCache.has(key)) return ML._stratCache.get(key);
-  const feat = ML.makeFeatures(def.sym, def.horizon, entry.from || '2005-01-01');
-  const wf = ML.walkForward(feat, def.model, opts.params || {});
+  // predictions do not depend on trading cost, so the 3x-cost stress test reuses the trained model
+  let pc = ML._predCache.get(pkey);
+  if (!pc) {
+    const feat = ML.featuresFor ? ML.featuresFor(def, from) : ML.makeFeatures(def.sym, def.horizon, from);
+    const cached = ML.cached(pkey, feat);
+    pc = { feat, wf: ML.walkForward(feat, def.model, cached ? { ...params, resume: cached } : params) };
+    if (cached) { pc.wf.cached = cached.n; pc.wf.folds = cached.folds.concat(pc.wf.folds); }
+    ML._predCache.set(pkey, pc);
+  }
+  const { feat, wf } = pc;
   // map predictions back to full price axis
   const n = feat.px.length;
   const sig = new Array(n).fill(0);
+  const discrete = ML.models[def.model] && ML.models[def.model].discrete;
   const scale = Q.std(wf.preds.filter(isFinite)) || 1e-4;
   feat.idx.forEach((pi, i) => {
-    if (isFinite(wf.preds[i])) sig[pi] = Math.max(-1, Math.min(1, wf.preds[i] / (2 * scale)));
+    if (isFinite(wf.preds[i])) sig[pi] = discrete ? wf.preds[i] : Math.max(-1, Math.min(1, wf.preds[i] / (2 * scale)));
   });
+  if (def.longOnly) for (let i = 0; i < n; i++) sig[i] = Math.max(0, sig[i]);
   const rets = feat.px.map((v, i) => i ? v / feat.px[i - 1] - 1 : 0);
   const lagged = Q.lag(sig, 1);
   const bt = Q.backtest(lagged, rets, { costBps: opts.costBps ?? entry.cost ?? 5 });

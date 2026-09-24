@@ -10,7 +10,7 @@ global.performance = { now: () => Date.now() };
 global.UI = { def: () => {}, MODULES: {}, altSignals: null };
 
 for (const f of ['data/bundle.js', 'data/fundamentals.js', 'data/newsfeed.js', 'data/sp500.js', 'data/market.js',
-  'app/core.js', 'app/quant.js', 'app/factors.js', 'app/ml.js', 'app/strategies.js', 'app/registry.js']) {
+  'app/core.js', 'app/quant.js', 'app/factors.js', 'app/ml.js', 'app/strategies.js', 'app/mlzoo.js', 'app/registry.js']) {
   new Function(fs.readFileSync(path.join(ROOT, f), 'utf-8'))();
 }
 // pull just the scoring + decision functions out of modules_d/g without the full UI.def machinery

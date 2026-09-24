@@ -397,6 +397,8 @@ S.run = function (entry, opts = {}) {
     extra.lastWeights = Object.fromEntries(Object.entries(res.weights).map(([s, a]) => [s, a[a.length - 1]]));
   } else if (def.kind === 'ml') {
     return ML.runStrategy(entry, opts);
+  } else if (def.kind === 'meta') {
+    return ML.zoo.metaRun(entry, opts);
   }
   // benchmark aligned
   const benchSym = entry.bench || 'SPY';

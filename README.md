@@ -118,6 +118,7 @@ Deep links work too: `#risk`, `#advisor`, `#guide`, `#strat=S035`, `#chart=GLD`.
 | Module | What you do there |
 |---|---|
 | **How To Use This** | The full plain-English manual: five-step start, Wharton playbook, term dictionary, module map |
+| **Competition Desk** | Live countdown to every competition milestone, IPS builder, client-fit scorecard, trade journal with CSV export, judge Q&A prep, and a printable one-page brief |
 | **Command Center** | Market overview: regime monitor, yield curve, sector momentum, correlations. Drag panels to customize |
 | **Markets** | Sortable screener of every instrument with real return/vol/Sharpe/drawdown stats |
 | **Data Hub** | Dataset catalog, quality audit, CSV upload (your file becomes a first-class instrument) |
@@ -136,12 +137,36 @@ Deep links work too: `#risk`, `#advisor`, `#guide`, `#strat=S035`, `#chart=GLD`.
 | **Ensemble Engine** | Strategy competition and inverse-vol blending of uncorrelated winners |
 | **Alpha Factory** | Machine-generated trading signals pushed through an IC gauntlet |
 | **ML Lab** | Walk-forward model training with honest out-of-sample diagnostics |
+| **ML Model Zoo** | Every ported open-source model with its source repo and license, a live training studio (loss curves, attention maps), a model race, and an ML twin for every strategy |
+| **Quant Studio** | GARCH volatility, HMM regimes, cointegrated pairs with a Kalman hedge, factor regressions, options payoff and Greeks, overfitting tests (DSR, PBO), correlation network, fractional differencing |
 | **Portfolio Builder** | Professional optimizers: risk parity, HRP, minimum variance, Black-Litterman, Kelly |
 | **My Holdings** | Your portfolio: P&L at real closes, cash accounting, CSV import, factor betas, AI review, strategy reports |
 | **Risk Lab** | Crisis replays on real windows, Monte Carlo, VaR ladder, rate shocks, custom scenarios |
 | **Reports / Knowledge Base** | Every document and every finding, searchable and printable |
 
 ![Risk Lab, 2008 crisis replay](docs/screenshots/risk-lab.png)
+
+## Open-source ML models
+
+Every ML strategy runs a JavaScript port of a well-known open-source model. The ports are written into the app, so nothing is downloaded when the page runs. The **ML Model Zoo** module links to each source file.
+
+| Model | Source repo | License |
+|---|---|---|
+| LSTM, GRU, Attention LSTM, Transformer, LightGBM-style GBDT, Alpha158 features | microsoft/qlib | MIT |
+| Random Forest, Extra Trees, Elastic Net, Gaussian Naive Bayes | scikit-learn/scikit-learn | BSD-3-Clause |
+| Linear SVM (Pegasos) | stefan-jansen/machine-learning-for-trading | MIT |
+| DQN trading agent | AI4Finance-Foundation/FinRL | MIT |
+| Reverse-mode autograd | karpathy/micrograd | MIT |
+| Gaussian HMM | hmmlearn/hmmlearn | BSD-3-Clause |
+| Kalman dynamic hedge | pykalman/pykalman | BSD |
+| GARCH(1,1) | bashtage/arch | NCSA |
+| OLMAR | Marigold/universal-portfolios | MIT |
+| Triple barrier, meta-labeling, FFD, purged CV | BlackArbsCEO/Adv_Fin_ML_Exercises | MIT |
+| Tear-sheet and IC metrics | ranaroussi/quantstats, quantopian/alphalens | Apache-2.0 |
+
+**ML twins.** Each strategy has a twin that uses meta-labeling. A model from the strategy's category learns when to trust the strategy's signal and resizes positions based on that. The results are trained walk-forward on real prices and reported honestly. Most twins do not beat the original strategy on Sharpe. Most of them do cut the maximum drawdown. The Twins tab shows both numbers for every strategy.
+
+**Speed.** `tools/build_mlcache.js` runs the same model code in Node every night and stores the walk-forward predictions in `data/mlcache.js`. The browser loads those predictions and then only trains the newest rows.
 
 ## The Investment Firm Simulator
 
@@ -173,7 +198,7 @@ Every backtest applies a 1-day signal lag and linear transaction costs. A strate
 
 ## Rebuilding with fresh data
 
-A GitHub Action ([refresh-data.yml](.github/workflows/refresh-data.yml)) refreshes everything on weekday mornings and redeploys the site. To run it locally:
+A GitHub Action ([refresh-data.yml](.github/workflows/refresh-data.yml)) refreshes everything after every US session and redeploys the site. The top bar shows how old the data is. When a newer build goes live, an open page offers a one-click reload, and cached leaderboards are cleared so every result is recomputed on the new prices. To run it locally:
 
 ```bash
 python tools/download_data.py        # Yahoo + FRED + Coinbase price/macro history
@@ -182,6 +207,7 @@ python tools/download_altdata.py     # GDELT news + StockTwits + Wikipedia atten
 python tools/download_sp500.py       # every S&P 500 constituent, 10y weekly
 python tools/download_market.py      # every other listed US stock, 3y weekly
 python tools/build_bundle.py         # compact integer-scaled data bundle
+node tools/build_mlcache.js          # prebuilt ML walk-forward predictions and twins (~16 min)
 python tools/assemble.py             # everything into dist/alphalab.html
 node tools/smoke.js                  # 24-check test suite against the real bundle
 ```
