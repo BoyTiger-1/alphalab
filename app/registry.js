@@ -270,6 +270,45 @@ regData('Alt Data / NLP', 'Satellite Imagery, Retail Traffic', 'Parking-lot car 
 regData('Options', 'Gamma Scalping / Delta-Neutral', 'Continuously re-hedge a long-options book to monetize realized vs implied vol gaps. Requires an options chain with greeks (strike-level quotes); the bundled dataset covers index-level implied vol (VIX) only, the VRP Harvest module implements the closest index-level proxy.', 'Options chain data');
 regData('Options', 'VIX Term-Structure Carry', 'Short front-month VIX futures in contango, long in backwardation. Requires the VIX futures curve (VX1–VX8 settlements); the bundled VIX spot supports only the regime-proxy variants implemented above.', 'VIX futures curve');
 
+/* ---- Open-Source ML (JavaScript ports of permissively licensed GitHub models, see ML.SOURCES).
+   Appended after the data-gated modules so every earlier strategy id stays stable. ---- */
+const ml = (model, sym, horizon, extra) => ({ kind: 'ml', model, sym, horizon, ...extra });
+const OS = 'Open-Source ML';
+reg(OS, 'LSTM Sequence Model, SPY', ml('lstm', 'SPY', 5),
+  'Port of qlib pytorch_lstm.py (microsoft/qlib, MIT): a 12-unit LSTM reads 20 days of 7 features in qlib feature-major layout and predicts the 5-day return. Walk-forward with purging, warm-started and refit yearly.', { tags: ['deep', 'qlib'] });
+reg(OS, 'GRU Sequence Model, Bitcoin', ml('gru', 'BTC-USD', 5),
+  'Port of qlib pytorch_gru.py (microsoft/qlib, MIT) on BTC: gated recurrent unit over a 20-day window of return, momentum, vol, RSI and VIX features.', { bench: 'BTC-USD', cost: 10, tags: ['deep', 'qlib'] });
+reg(OS, 'Attention LSTM (ALSTM), Nasdaq 100', ml('alstm', 'QQQ', 5),
+  'Port of qlib pytorch_alstm.py (microsoft/qlib, MIT): input projection, GRU encoder, a learned attention over the 20 time steps, and a head on [last state, attended context]. The Model Zoo shows which days the attention focuses on.', { tags: ['deep', 'qlib'] });
+reg(OS, 'Transformer Encoder, SPY', ml('transformer', 'SPY', 5),
+  'Port of qlib pytorch_transformer.py (microsoft/qlib, MIT): linear embedding, sinusoidal positional encoding, 2-head self-attention, feed-forward block with residuals and LayerNorm, decoded from the last step.', { tags: ['deep', 'qlib'] });
+reg(OS, 'Random Forest, SPY', ml('rf', 'SPY', 10),
+  'Bagged histogram CART trees (40 trees, depth 5, sqrt feature sampling) following scikit-learn RandomForestRegressor (BSD-3). Predicts 2-week returns walk-forward.', { tags: ['trees', 'sklearn'] });
+reg(OS, 'Extra Trees, Gold', ml('extratrees', 'GLD', 10),
+  'Extremely randomized trees (scikit-learn ExtraTreesRegressor, BSD-3): random split points, no bootstrap, lower variance than a forest. 2-week gold returns.', { tags: ['trees', 'sklearn'] });
+reg(OS, 'GBDT on Alpha158, SPY', ml('gbdt', 'SPY', 5, { features: 'alpha158' }),
+  'The qlib benchmark recipe (microsoft/qlib, MIT): a LightGBM-style gradient-boosted tree model (shrinkage 0.05, row/col subsampling, L2 leaves) on the Alpha158 feature set computed from real closes, plus the KBAR and volume operators where full OHLCV history exists (ROC, MA, STD, BETA, RSQR, RESI, QTLU/QTLD, RSV, CNTP/CNTN, SUMP/SUMN over 5-60 day windows).', { tags: ['trees', 'qlib', 'alpha158'] });
+reg(OS, 'Elastic Net, Long Treasuries', ml('elasticnet', 'TLT', 10),
+  'Coordinate-descent elastic net (scikit-learn ElasticNet, BSD-3), L1/L2 mix 0.5: a sparse, interpretable linear forecaster for 2-week TLT returns.', { tags: ['linear', 'sklearn'] });
+reg(OS, 'Linear SVM Classifier, Nasdaq 100', ml('svm', 'QQQ', 5),
+  'Pegasos stochastic sub-gradient SVM as used in stefan-jansen/machine-learning-for-trading (MIT): max-margin up/down classifier, exposure = tanh(margin).', { tags: ['linear'] });
+reg(OS, 'Gaussian Naive Bayes, Small Caps', ml('nb', 'IWM', 5),
+  'scikit-learn GaussianNB (BSD-3) on IWM: class-conditional Gaussians per feature, exposure = 2 P(up) - 1. A fast probabilistic baseline.', { tags: ['probabilistic', 'sklearn'] });
+reg(OS, 'DQN Reinforcement Agent, SPY', ml('dqn', 'SPY', 5),
+  'Deep Q-Network trading agent in the style of AI4Finance-Foundation/FinRL (MIT): state = features + current position, actions short/flat/long, reward = P&L net of costs, replay buffer and target network. Retrained yearly, walk-forward.', { tags: ['deep', 'rl', 'finrl'] });
+reg(OS, '3-State HMM Regime, S&P 500', single('SPY', 'hmmK', { K: 3, calm: 1, mid: 0.6, stress: 0 }),
+  'Gaussian HMM with 3 states on (return, log vol), Baum-Welch fit as in hmmlearn (BSD-3), refit on an expanding window every 126 days. Exposure comes from the causal forward-filtered state probabilities only, never the smoothed ones.', { tags: ['regime', 'hmmlearn'] });
+reg(OS, 'Kalman Dynamic Hedge, XOM / CVX', pair('XOM', 'CVX', 'kalmanPair', { delta: 1e-4, entry: 1, exit: 0 }),
+  "Ernie Chan's Kalman-filter pair trade (pykalman, BSD): the hedge ratio and intercept evolve as a random walk; trade the standardized one-step forecast error.", { tags: ['pairs', 'kalman'] });
+reg(OS, 'GARCH(1,1) Vol Target, S&P 500', single('SPY', 'garchTarget', { target: 0.12, maxLev: 1.5, trend: 200, offWeight: 0.25 }),
+  'GARCH(1,1) fitted by maximum likelihood (bashtage/arch, NCSA) on an expanding window, refit yearly. Position = 12% target vol / GARCH forecast vol, capped at 1.5x, scaled down below the 200-day average.', { tags: ['volatility', 'arch'] });
+reg(OS, 'OLMAR Sector Rotation', xs(['XLF', 'XLK', 'XLE', 'XLV', 'XLY', 'XLP', 'XLI', 'XLU', 'XLB'], 'olmar', { window: 5, eps: 10, reb: 5 }),
+  'Online Moving Average Reversion (Li and Hoi 2012), ported from Marigold/universal-portfolios (MIT): moves weight toward sectors trading below their 5-day average, projected onto the simplex. Weekly rebalance.', { cost: 3, tags: ['online', 'universal-portfolios'] });
+reg(OS, 'Meta-Labeled Golden Cross (RF)', { kind: 'meta', base: 'S001', model: 'rf', sizing: 'bet' },
+  "Lopez de Prado's meta-labeling (BlackArbsCEO/Adv_Fin_ML_Exercises, MIT): the 50/200 cross picks the side, and a random forest trained on triple-barrier labels of the strategy's own P&L decides how much to bet, conditioned on VIX, credit, curve, HMM regime and GARCH vol. Purged walk-forward.", { tags: ['meta-labeling'] });
+reg(OS, 'Meta-Labeled Gold Breakout (GBDT)', { kind: 'meta', base: 'S004', model: 'gbdt', sizing: 'bet' },
+  'The 55-day Donchian breakout on gold with a GBDT meta-model sizing each bet from its predicted probability of hitting the upper barrier first.', { bench: 'GLD', tags: ['meta-labeling'] });
+
 S.registry = R;
 S.categories = [...new Set(R.map(r => r.cat))];
 S.byId = Object.fromEntries(R.map(r => [r.id, r]));

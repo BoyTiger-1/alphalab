@@ -12,7 +12,7 @@ global.localStorage = { _m: {}, getItem(k) { return this._m[k] ?? null; }, setIt
 global.document = { createElement: () => ({ innerHTML: '', content: { firstChild: null }, style: {} }), body: {}, getElementById: () => null };
 global.performance = { now: () => Date.now() };
 
-for (const f of ['data/bundle.js', 'app/core.js', 'app/quant.js', 'app/factors.js', 'app/ml.js', 'app/strategies.js', 'app/registry.js', 'app/researcher.js']) {
+for (const f of ['data/bundle.js', 'app/core.js', 'app/quant.js', 'app/factors.js', 'app/ml.js', 'app/strategies.js', 'app/mlzoo.js', 'app/registry.js', 'app/researcher.js']) {
   new Function(fs.readFileSync(path.join(ROOT, f), 'utf-8'))();
 }
 
