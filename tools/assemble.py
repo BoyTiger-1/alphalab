@@ -29,6 +29,7 @@ PARTS = {
     "/*__MODULES_H__*/": os.path.join(APP, "modules_h.js"),
     "/*__MODULES_I__*/": os.path.join(APP, "modules_i.js"),
     "/*__FX__*/": os.path.join(APP, "fx.js"),
+    "/*__EXPLAIN__*/": os.path.join(APP, "explain.js"),
     "/*__MLCACHE__*/": os.path.join(ROOT, "data", "mlcache.js"),
     "/*__TUTORIAL__*/": os.path.join(APP, "tutorial.js"),
     "/*__SP500__*/": os.path.join(ROOT, "data", "sp500.js"),

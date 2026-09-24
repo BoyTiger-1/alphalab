@@ -1,5 +1,5 @@
 /* AlphaLab FX: motion and freshness layer. Page transitions, staggered panel entry, count-up numbers,
-   chart draw-in, live tick flashes, toasts, splash, and the freshness machinery: data-age badge,
+   chart draw-in, live tick flashes, toasts, and the freshness machinery: data-age badge,
    stale-result invalidation when the data snapshot changes, and version polling that offers a reload
    when a newer nightly build is deployed. Everything respects prefers-reduced-motion. */
 'use strict';
@@ -34,7 +34,7 @@ function countUp(node, dur = 650) {
   const m = txt.match(NUM); if (!m) return;
   const target = parseFloat(m[3].replace(/,/g, '')); if (!isFinite(target) || target === 0) return;
   const dec = (m[3].split('.')[1] || '').length, commas = m[3].includes(',');
-  node.dataset.fxc = '1';
+  node.dataset.fxc = '1'; node.dataset.fxt = txt;
   const t0 = performance.now();
   const fmt = v => { let s = v.toFixed(dec); if (commas) s = Number(s).toLocaleString(undefined, { minimumFractionDigits: dec, maximumFractionDigits: dec }); return m[1] + m[2] + s + m[4]; };
   const step = now => {
@@ -132,12 +132,6 @@ async function checkVersion() {
   } catch (e) { /* offline or file:// */ }
 }
 
-/* ---------- splash ---------- */
-function hideSplash() {
-  const s = document.getElementById('splash'); if (!s) return;
-  s.classList.add('gone'); setTimeout(() => s.remove(), FX.reduced ? 0 : 650);
-}
-
 /* ---------- ambient background ---------- */
 function ambient() {
   if (document.getElementById('ambient')) return;
@@ -152,7 +146,7 @@ UI.boot = function () {
   boot0.apply(this, arguments);
   document.body.classList.add('fx-ready');
   if (FX.reduced) document.body.classList.add('fx-reduced');
-  ambient(); paintAge(); hideSplash();
+  ambient(); paintAge();
   const ws = document.getElementById('workspace');
   if (mo && ws) mo.observe(ws, { childList: true, subtree: true });
   choreograph(ws);

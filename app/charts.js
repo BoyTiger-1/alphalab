@@ -80,16 +80,22 @@ C.line = function (el, series, opts = {}) {
   const X = i => padL + (W - padL - padR) * (n === 1 ? 0.5 : i / (n - 1));
   const Y = v => padT + (H - padT - padB) * (1 - (tf(Math.max(v, opts.log ? 1e-9 : -Infinity)) - tlo) / (thi - tlo));
   // grid + y labels
-  ctx.font = '10px Consolas, monospace';
+  ctx.font = '10px "JetBrains Mono", Consolas, monospace';
   ctx.fillStyle = C.MUTED; ctx.strokeStyle = C.GRID; ctx.lineWidth = 1;
   const yticks = opts.log
     ? niceTicks(lo, hi, 5).filter(t => t > 0)
     : niceTicks(lo, hi, 5);
+  // axis labels carry only as many decimals as the tick step needs (2.0000 -> 2)
+  const tstep = yticks.length > 1 ? Math.abs(yticks[1] - yticks[0]) : 1;
+  const tdec = Math.min(4, Math.max(0, -Math.floor(Math.log10(tstep || 1) + 1e-9)));
+  const tickFmt = t => opts.pct || Math.abs(t) >= 1e6 ? fmtVal(t, opts) : t.toFixed(tdec);
+  const endYs = series.length >= 2 && opts.directLabels !== false ? series.map(s => { let vi = s.values.length - 1; while (vi >= 0 && (s.values[vi] == null || !isFinite(s.values[vi]))) vi--; return vi < 0 ? null : Y(s.values[vi]); }).filter(v => v != null) : [];
   for (const t of yticks) {
     const y = Math.round(Y(t)) + 0.5;
     if (y < padT || y > H - padB) continue;
     ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(W - padR, y); ctx.stroke();
-    ctx.fillText(fmtVal(t, opts), W - padR + 5, y + 3);
+    if (endYs.some(e => Math.abs(e - y) < 9)) continue;   // an end-value tag sits here
+    ctx.fillText(tickFmt(t), W - padR + 5, y + 3);
   }
   // x labels
   ctx.textAlign = 'center';
@@ -139,25 +145,28 @@ C.line = function (el, series, opts = {}) {
     }
     ctx.stroke(); ctx.setLineDash([]);
   });
-  // direct labels at line ends (≤4 series)
+  // end-value tags: the last value of each line in its own color, on the axis (legend names the lines)
   if (series.length >= 2 && series.length <= 4 && opts.directLabels !== false) {
-    ctx.font = '10px Consolas, monospace';
+    ctx.font = '600 10px "JetBrains Mono", Consolas, monospace';
     const used = [];
     series.forEach((s, si) => {
       let vi = s.values.length - 1;
       while (vi >= 0 && (s.values[vi] == null || !isFinite(s.values[vi]))) vi--;
       if (vi < 0) return;
-      let y = Y(s.values[vi]) + 3;
-      while (used.some(u => Math.abs(u - y) < 11)) y += 11;
+      let y = Math.min(Math.max(Y(s.values[vi]), padT + 6), H - padB - 6);
+      while (used.some(u => Math.abs(u - y) < 14)) y += 14;
       used.push(y);
-      ctx.fillStyle = s.color || C.SERIES[si % C.SERIES.length];
-      ctx.fillText(s.name, W - padR + 5, Math.min(Math.max(y, padT + 8), H - padB) - 8 + 8);
+      const col = s.color || C.SERIES[si % C.SERIES.length];
+      const txt = opts.pct || Math.abs(s.values[vi]) >= 1e6 ? fmtVal(s.values[vi], opts) : s.values[vi].toFixed(Math.max(tdec, 2));
+      const tw = ctx.measureText(txt).width + 8;
+      ctx.fillStyle = col; ctx.fillRect(W - padR + 2, y - 7, Math.min(tw, padR - 3), 14);
+      ctx.fillStyle = '#0b0d10'; ctx.fillText(txt, W - padR + 6, y + 3.5);
     });
   }
   // legend (top row) for ≥2 series
   if (series.length >= 2 && opts.legend !== false) {
     let lx = padL + 2;
-    ctx.font = '10px system-ui, sans-serif';
+    ctx.font = '10px Inter, system-ui, sans-serif';
     series.forEach((s, si) => {
       const col = s.color || C.SERIES[si % C.SERIES.length];
       ctx.fillStyle = col; ctx.fillRect(lx, padT - 4, 8, 3);
@@ -222,7 +231,7 @@ C.candles = function (el, data, opts = {}) {
   const plotB = H - padB - volH;
   const X = i => padL + (W - padL - padR) * ((i + 0.5) / n);
   const Y = v => padT + (plotB - padT) * (1 - (v - lo) / (hi - lo));
-  ctx.font = '10px Consolas, monospace';
+  ctx.font = '10px "JetBrains Mono", Consolas, monospace';
   ctx.fillStyle = C.MUTED; ctx.strokeStyle = C.GRID;
   for (const t of niceTicks(lo, hi, 5)) {
     const y = Math.round(Y(t)) + 0.5;
@@ -265,7 +274,7 @@ C.candles = function (el, data, opts = {}) {
   });
   // legend for overlays
   if ((opts.overlays || []).length) {
-    let lx = padL + 2; ctx.font = '10px system-ui, sans-serif';
+    let lx = padL + 2; ctx.font = '10px Inter, system-ui, sans-serif';
     for (let oi = 0; oi < opts.overlays.length; oi++) {
       const ov = opts.overlays[oi];
       const col = ov.color || C.SERIES[(oi + 2) % 8];
@@ -312,7 +321,7 @@ C.bars = function (el, items, opts = {}) {
   const vals = items.map(i => i.value);
   let lo = Math.min(0, ...vals), hi = Math.max(0, ...vals);
   if (lo === hi) hi = lo + 1;
-  ctx.font = '10px Consolas, monospace';
+  ctx.font = '10px "JetBrains Mono", Consolas, monospace';
   if (opts.horizontal) {
     const padL = Math.min(120, Math.max(...items.map(i => ctx.measureText(i.label).width)) + 12);
     const padR = 52, padT = 6, padB = 6;
@@ -458,7 +467,7 @@ C.scatter = function (el, pts, opts = {}) {
   xlo -= xp; xhi += xp; ylo -= yp; yhi += yp;
   const X = v => padL + (W - padL - padR) * ((v - xlo) / (xhi - xlo));
   const Y = v => padT + (H - padT - padB) * (1 - (v - ylo) / (yhi - ylo));
-  ctx.font = '10px Consolas, monospace'; ctx.fillStyle = C.MUTED; ctx.strokeStyle = C.GRID;
+  ctx.font = '10px "JetBrains Mono", Consolas, monospace'; ctx.fillStyle = C.MUTED; ctx.strokeStyle = C.GRID;
   for (const t of niceTicks(ylo, yhi, 5)) {
     const y = Math.round(Y(t)) + 0.5;
     ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(W - padR, y); ctx.stroke();
@@ -501,7 +510,7 @@ C.fan = function (el, bands, dates, opts = {}) {
   const n = bands[0].length;
   const X = i => padL + (W - padL - padR) * (i / (n - 1));
   const Y = v => padT + (H - padT - padB) * (1 - (v - lo) / (hi - lo));
-  ctx.font = '10px Consolas, monospace'; ctx.fillStyle = C.MUTED; ctx.strokeStyle = C.GRID;
+  ctx.font = '10px "JetBrains Mono", Consolas, monospace'; ctx.fillStyle = C.MUTED; ctx.strokeStyle = C.GRID;
   for (const t of niceTicks(lo, hi, 5)) {
     const y = Math.round(Y(t)) + 0.5;
     ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(W - padR, y); ctx.stroke();

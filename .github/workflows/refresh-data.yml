@@ -66,5 +66,10 @@ jobs:
             echo "No data changes."
           else
             git commit -m "data: refresh market snapshot ($(date -u +%F))"
+            # main may have moved during the ~1h run; replay the data commit on top (its generated files win)
+            git pull --rebase -X theirs origin main
+            python tools/assemble.py && cp dist/alphalab.html docs/index.html && cp dist/version.json docs/version.json
+            git add dist/alphalab.html docs/index.html docs/version.json
+            git diff --cached --quiet || git commit -m "data: rebuild page after rebase"
             git push
           fi

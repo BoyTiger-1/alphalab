@@ -192,6 +192,12 @@ AL.live = {
   key() { return AL.store.get('live_finnhub_key', null) || (typeof window !== 'undefined' && window.ALPHALAB_LIVE_KEY) || null; },
   setKey(k) { k ? AL.store.set('live_finnhub_key', k) : AL.store.del('live_finnhub_key'); },
 
+  // is the bundle's last bar recent enough (<= 4 calendar days) that a live tick can stand in for it?
+  _fresh(sym) {
+    const s = AL.getSeries(sym); if (!s || !s.dates || !s.dates.length) return false;
+    const t = Date.parse(s.dates[s.dates.length - 1]);
+    return isFinite(t) && (Date.now() - t) <= 4 * 86400000;
+  },
   _cryptoSyms() { return Object.keys((AL.D && AL.D.crypto) || {}); },   // bundle ids match Coinbase products (BTC-USD ...)
   async _fetchCrypto() {
     await Promise.all(this._cryptoSyms().map(async sym => {
@@ -203,7 +209,9 @@ AL.live = {
         // live tick into the series (below), lastCloseRaw would return that tick and the change would
         // collapse to a per-minute delta. eod[sym] holds the pristine close once injection has run.
         const lc = (this.eod[sym] != null ? this.eod[sym] : AL.lastCloseRaw(sym));
-        if (p > 0) { this.px[sym] = p; if (lc) this.chg[sym] = p / lc - 1; }
+        // a "1D" change only means something against a recent close: if the bundle is days old the
+        // diff spans weeks, so leave chg unset and fall back to the true EOD day change.
+        if (p > 0) { this.px[sym] = p; if (lc && this._fresh(sym)) this.chg[sym] = p / lc - 1; else delete this.chg[sym]; }
       } catch (e) { /* transient, keep the last good tick */ }
     }));
   },
@@ -248,6 +256,7 @@ AL.live = {
       if (!(px > 0)) continue;
       const s = AL.getSeries(sym);
       if (!s || !s.values || !s.values.length) continue;
+      if (!this._fresh(sym)) continue;                              // never splice a tick onto a stale bar
       const i = s.values.length - 1;
       if (this.eod[sym] == null) this.eod[sym] = s.values[i];       // capture the pristine close once
       const base = this.eod[sym];
