@@ -1,13 +1,15 @@
 <meta charset="utf-8">
-<title>AlphaLab — Quant Research OS</title>
+<title>AlphaLab | Quant Research OS</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
 /*__CSS__*/
 </style>
-<div id="splash"><div class="sp-in"><div class="sp-mark">&alpha;<span>LPHALAB</span></div><div class="sp-sub">Quant Research OS</div><div class="sp-bars"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div><div class="sp-msg">loading real market data</div></div></div>
 <div id="app" style="display:none">
   <div id="topbar">
     <div id="logo"><span class="mark">α<span>LPHALAB</span></span><span class="sub">Quant Research OS</span></div>
-    <div id="cmdwrap"><input id="cmd" placeholder="terminal — try: CHART NVDA · BT S001 · STRESS COVID · Ctrl+K" autocomplete="off" spellcheck="false"></div>
+    <div id="cmdwrap"><input id="cmd" placeholder="terminal, try: CHART NVDA · BT S001 · STRESS COVID · Ctrl+K" autocomplete="off" spellcheck="false"></div>
     <div class="spacer"></div>
     <span class="stat" id="asof"></span>
     <span class="stat live-badge" id="live-badge" title="live prices"><span class="led idle" id="live-led"></span><span id="live-txt">EOD</span></span>
@@ -63,6 +65,7 @@
 /*__MODULES_H__*/
 /*__MODULES_I__*/
 /*__FX__*/
+/*__EXPLAIN__*/
 /*__TUTORIAL__*/
 try { UI.boot(); } catch (e) {
   document.body.innerHTML = '<pre style="color:#e66767;padding:20px;font-family:monospace">Boot failure: ' + (e.stack || e.message) + '</pre>';
