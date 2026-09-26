@@ -69,9 +69,12 @@ jobs:
             # main may have moved during the ~1h run; replay the data commit on top (its generated files win).
             # Scratch outputs the job did not commit would block the rebase, so drop them first.
             git reset -q --hard HEAD
+            pre=$(git rev-parse HEAD)
             git pull --rebase -X theirs origin main
-            python tools/assemble.py && cp dist/alphalab.html docs/index.html && cp dist/version.json docs/version.json
-            git add dist/alphalab.html dist/version.json docs/index.html docs/version.json
-            git diff --cached --quiet || git commit -m "data: rebuild page after rebase"
+            if [ "$(git rev-parse HEAD)" != "$pre" ]; then   # only rebuild when new commits actually came in
+              python tools/assemble.py && cp dist/alphalab.html docs/index.html && cp dist/version.json docs/version.json
+              git add dist/alphalab.html dist/version.json docs/index.html docs/version.json
+              git diff --cached --quiet || git commit -m "data: rebuild page after rebase"
+            fi
             git push
           fi
