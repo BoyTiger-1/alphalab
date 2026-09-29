@@ -224,13 +224,32 @@ UI.def('advisor', 'Stock Advisor', '✦', 'Advisory', function (el, state, tab) 
       perSec[sec] = (perSec[sec] || 0) + 1;
       top.push(r);
     }
-    const iv = top.map(r => 1 / Math.max(0.12, r.vol || 0.2)), ivs = Q.sum(iv) || 1;
-    const cv = top.map(r => Math.max(0.05, fitOf.get(r.sym).score)), cvs = Q.sum(cv) || 1;
-    const sugW = {};
-    top.forEach((r, i) => sugW[r.sym] = Math.min(0.15, P.weighting === 'invvol' ? iv[i] / ivs
-      : P.weighting === 'conviction' ? cv[i] / cvs : 0.5 / top.length + 0.5 * iv[i] / ivs));
-    const wTot = Q.sum(Object.values(sugW)) || 1;
-    top.forEach(r => sugW[r.sym] /= wTot);
+    // with the quant brain loaded, the basket IS the Competition Center's stock list for this risk
+    // level (evidence-weighted conviction, correlation limit) sized by the same covariance optimizer
+    let sugW = {}, brainT = null, sizeLabel = P.weighting === 'invvol' ? 'calmer names weighted up' : P.weighting === 'conviction' ? 'strongest scores weighted up' : 'even blend';
+    if (UI.sizeSleeve && UI.brainPanel) {
+      const picks = UI.topStockPicks(P.nStocks, { profile: key });
+      if (picks.length) {
+        top.length = 0;
+        picks.forEach(p => top.push(p));
+        const sz = UI.sizeSleeve(picks, key, 0.15);
+        brainT = { profile: P, profileKey: key, brain: { sleeve: { method: sz.method, sleeveVol: sz.sleeveVol, eqVol: sz.eqVol, divRatio: sz.divRatio, maxCorr: sz.maxCorr,
+          skipped: picks.skipped || [], votes: Object.fromEntries(picks.map(p => [p.sym, { conv: p.conv, agreeFrac: p.agreeFrac, votes: p.votes }])) }, timing: [], risk: null, scaledTo: 1, budget: P.budget } };
+        sizeLabel = `sized by ${sz.method}`;
+        sugW = {};
+        const ws = Q.sum(sz.w) || 1;
+        picks.forEach((p, i) => sugW[p.sym] = sz.w[i] / ws);
+      }
+    }
+    if (!brainT) {
+      const iv = top.map(r => 1 / Math.max(0.12, r.vol || 0.2)), ivs = Q.sum(iv) || 1;
+      const cv = top.map(r => Math.max(0.05, fitOf.get(r.sym).score)), cvs = Q.sum(cv) || 1;
+      sugW = {};
+      top.forEach((r, i) => sugW[r.sym] = Math.min(0.15, P.weighting === 'invvol' ? iv[i] / ivs
+        : P.weighting === 'conviction' ? cv[i] / cvs : 0.5 / top.length + 0.5 * iv[i] / ivs));
+      const wTot = Q.sum(Object.values(sugW)) || 1;
+      top.forEach(r => sugW[r.sym] /= wTot);
+    }
     document.getElementById('ad-body').innerHTML = `
       <div class="note" style="margin-bottom:8px"><b>${res.universe.toLocaleString()}</b> stocks scored. Regime: <b>${regime.label}</b>. ${regime.pCalm > 0.5 ? 'Risk-on tape, momentum and beta get a small boost.' : 'Stressed tape, the model favors low-beta defensive names.'}</div>
       <div class="controls" style="margin-bottom:6px"><label class="lbl">risk level</label>
@@ -253,13 +272,14 @@ UI.def('advisor', 'Stock Advisor', '✦', 'Advisory', function (el, state, tab) 
             <td class="r">${f.pct(r.conf, 0)}</td></tr>`).join('')}
           </tbody></table></div></div>
         <div style="display:flex;flex-direction:column;gap:12px;min-width:0">
-          <div class="panel"><div class="panel-head">Starter basket (${P.label.toLowerCase()}: ${P.nStocks} stocks, max ${P.perSector} per sector, ${P.weighting === 'invvol' ? 'calmer names weighted up' : P.weighting === 'conviction' ? 'strongest scores weighted up' : 'even blend'})</div><div class="panel-body">
-            ${top.map(r => `<div class="kv"><span class="k"><span class="sym">${r.sym}</span> ${f.esc(r.name.slice(0, 16))} <span style="color:var(--muted);font-size:10px">${f.esc((r.sector || '').slice(0, 12))}</span></span><span class="v">${f.pct(sugW[r.sym], 1)} <span class="x" data-cantbuy="${r.sym}" title="Can't buy ${r.sym} where you trade? Remove it and the next best stock takes its place" style="cursor:pointer;color:var(--muted);margin-left:6px">&times;</span></span></div>`).join('')}
+          <div class="panel"><div class="panel-head">Starter basket (${P.label.toLowerCase()}: ${P.nStocks} stocks, max ${P.perSector} per sector, ${sizeLabel})</div><div class="panel-body">
+            ${top.map(r => `<div class="kv"><span class="k"><span class="sym">${r.sym}</span> ${f.esc(r.name.slice(0, 16))} <span style="color:var(--muted);font-size:10px">${f.esc((r.sector || '').slice(0, 12))}</span></span><span class="v">${brainT && UI.engineAgreeCell ? UI.engineAgreeCell(brainT.brain.sleeve.votes[r.sym]) + ' ' : ''}${f.pct(sugW[r.sym], 1)} <span class="x" data-cantbuy="${r.sym}" title="Can't buy ${r.sym} where you trade? Remove it and the next best stock takes its place" style="cursor:pointer;color:var(--muted);margin-left:6px">&times;</span></span></div>`).join('')}
             ${ex.size ? `<div class="controls" style="margin-top:8px;flex-wrap:wrap"><label class="lbl">can't buy</label>${[...ex].map(x => `<span class="chip" data-canbuy="${x}" title="Click to allow ${x} again">${x} &times;</span>`).join('')}</div>` : ''}
-            <div class="note" style="margin-top:8px">Press &times; on a stock you cannot buy where you trade: it is removed everywhere in AlphaLab and the next best stock fills the slot. Sector cap keeps the basket diversified; no single name above 15%. Enter these in My Holdings with your budget, then stress test in Risk Lab.</div></div></div>
+            <div class="note" style="margin-top:8px">Press &times; on a stock you cannot buy where you trade: it is removed everywhere in AlphaLab and the next best stock fills the slot. Sector cap keeps the basket diversified; no single name above 15%.${brainT ? ' Same stocks as the Competition Center at this risk level; the chip shows how many engines agree (hover for each vote).' : ''} Enter these in My Holdings with your budget, then stress test in Risk Lab.</div></div></div>
           <div class="panel"><div class="panel-head">Pick detail</div><div class="panel-body" id="ad-detail"><div class="empty">Click any stock for the full reasoning.</div></div></div>
         </div>
-      </div>`;
+      </div>
+      ${brainT ? `<div style="margin-top:12px">${UI.brainPanel(brainT, { noRisk: true, noTiming: true })}</div>` : ''}`;
     const bySym = Object.fromEntries(rows.map(r => [r.sym, r]));
     document.querySelectorAll('#ad-tbl tr[data-sym]').forEach(tr => tr.addEventListener('click', () => detail(bySym[tr.dataset.sym], regime)));
     document.getElementById('ad-q').addEventListener('input', AL.debounce(e => { state.q = e.target.value; render(res); }, 300));
@@ -289,12 +309,12 @@ UI.def('advisor', 'Stock Advisor', '✦', 'Advisory', function (el, state, tab) 
         const mineW = wc.map(() => 0);
         let ok = 0;
         for (const h of pf) {
-          const wv = AL.weeklyValues(h.sym);
+          const wv = UI.weeklyAligned ? UI.weeklyAligned(h.sym) : AL.weeklyValues(h.sym);
           if (!wv) continue;
           ok++;
           for (let t = 1; t < wc.length; t++) if (wv[t] && wv[t - 1]) mineW[t] += wv[t] / wv[t - 1] - 1;
         }
-        const meW = AL.weeklyValues(r.sym);
+        const meW = UI.weeklyAligned ? UI.weeklyAligned(r.sym) : AL.weeklyValues(r.sym);
         const a = [], b = [];
         for (let t = wc.length - 52; t < wc.length; t++)
           if (meW[t] && meW[t - 1]) { a.push(meW[t] / meW[t - 1] - 1); b.push(mineW[t] / Math.max(ok, 1)); }

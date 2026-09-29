@@ -15,6 +15,9 @@ for (const f of ['data/bundle.js', 'data/fundamentals.js', 'data/newsfeed.js', '
 }
 // modules_d/g carry the advisor + decision engine the allocator leans on; modules_h is the allocator
 for (const m of ['app/modules_d.js', 'app/modules_g.js', 'app/modules_h.js']) new Function(fs.readFileSync(path.join(ROOT, m), 'utf-8'))();
+// the quant brain (website only; the bot never loads it) and its prebuilt evidence, when present
+if (fs.existsSync(path.join(ROOT, 'data/evidence.js'))) new Function(fs.readFileSync(path.join(ROOT, 'data/evidence.js'), 'utf-8'))();
+new Function(fs.readFileSync(path.join(ROOT, 'app/modules_j.js'), 'utf-8'))();
 
 AL.boot();
 let fails = 0;
@@ -134,6 +137,36 @@ check('restore brings the list back to empty', UI.excludedList().length === 0);
 // the bot's fixed recipe (explicit stockShare) is unchanged by the profile-driven picker
 const botT = UI.buildAllocation(100000, 'balanced', 10, { stockShare: 0.55 });
 check('bot path keeps its own stock count', stocksOf(botT).length <= 10 && !botT.tuned, `${stocksOf(botT).length} stocks`);
+
+// --- quant brain: every tool feeds the plan, weighted by its evidence ---------------------------
+const bt = UI.factorBacktest();
+check('factor backtest runs point-in-time on the S&P 500', bt && bt.periods >= 80 && bt.avgNames > 300, bt && `${bt.periods} periods, ${Math.round(bt.avgNames)} names, ${bt.from} to ${bt.to}`);
+check('calibrated factor weights are never negative and never exceed the prior total', bt && Object.values(bt.weights).every(w => w >= 0)
+  && UI.PRICE_FACTORS.reduce((s, k) => s + bt.weights[k], 0) <= UI.PRICE_FACTORS.reduce((s, k) => s + bt.prior[k], 0) + 1e-9);
+check('factor vote is silenced when the out-of-sample composite has no edge', bt && (bt.composite.calibrated.t >= 1 || bt.compositeMult === 0), bt && `composite t=${bt.composite.calibrated.t.toFixed(2)}`);
+check('aligned beta is sane for a mega-cap', (() => { const b = UI.alignedBeta('AAPL'); return b > 0.5 && b < 2; })(), `AAPL beta ${(UI.alignedBeta('AAPL') || 0).toFixed(2)}`);
+UI._picksCache = {};
+const plans = Object.fromEntries(['conservative', 'balanced', 'aggressive'].map(k => [k, UI.buildAllocation(100000, k)]));
+for (const k of Object.keys(plans)) {
+  const t = plans[k], P = UI.RISK_PROFILES[k], b = t.brain;
+  check(`${k}: plan carries the brain's record`, b && b.sleeve && b.risk);
+  const st = stocksOf(t).map(h => h.sym);
+  let worstC = 0;
+  for (let i = 0; i < st.length; i++) for (let j = i + 1; j < st.length; j++) { const c = UI.pairCorr(st[i], st[j]); if (c != null) worstC = Math.max(worstC, c); }
+  check(`${k}: no two stocks move together beyond the limit (unless needed to fill the count)`, worstC <= P.maxCorr + 1e-9 || b.sleeve.skipped.length > 0, `max pair corr ${worstC.toFixed(2)} vs ${P.maxCorr}`);
+  check(`${k}: plan volatility inside the budget`, b.risk.vol <= P.budget.vol * 1.01 + 1e-9, `${(b.risk.vol * 100).toFixed(1)}% vs ${(P.budget.vol * 100).toFixed(1)}%`);
+  check(`${k}: measured crisis replay inside the budget`, !b.risk.worst || b.risk.worst.ret >= P.budget.stress * 1.01, b.risk.worst ? `${b.risk.worst.name} ${(b.risk.worst.ret * 100).toFixed(0)}%` : 'replays indicative only');
+  check(`${k}: dollars reconcile after the budget`, Math.abs(t.holdings.reduce((s, h) => s + h.dollars, 0) + t.cashDollars - 100000) < 1);
+  const ev = UI.strategyEvidence();
+  check(`${k}: only VALIDATED strategies time a fund`, b.timing.every(x => x.ids.every(id => Object.values(ev.bySym).flat().some(e => e.id === id && e.verdict === 'VALIDATED'))),
+    b.timing.map(x => `${x.sym} ${x.n} strat, long ${(x.s * 100).toFixed(0)}%`).join('; ') || 'no validated strategy on these funds');
+}
+const sz = UI.sizeSleeve(stocksOf(plans.balanced).map(h => ({ ...UI.scoreStocks().bySym[h.sym], conv: 0.3, agreeFrac: 0.6 })), 'balanced', 0.15);
+check('sleeve optimizer respects the cap and sums to at most 1', sz.w.every(w => w <= 0.15 + 1e-9) && Q.sum(sz.w) <= 1 + 1e-9, sz.w.map(w => w.toFixed(3)).join(' '));
+const bcSym = ['AAPL', 'MSFT', 'JPM'].find(x => UI.scoreStocks().bySym[x]);
+const bc = bcSym && UI.brainConviction(bcSym, UI.scoreStocks());
+const mlv = bc && bc.votes.find(v => v.engine === 'ML forecast');
+check('ML votes only with a significant walk-forward record', !mlv || (mlv.w > 0) === ((UI.mlEvidence(bc.sym) || { t: 0 }).t >= 1), mlv ? `${bcSym} ${mlv.why}` : 'no ML vote');
 
 console.log(fails ? `\n${fails} FAILURES` : '\nALL PASS');
 process.exit(fails ? 1 : 0);

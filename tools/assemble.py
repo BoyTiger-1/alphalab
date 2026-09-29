@@ -28,9 +28,11 @@ PARTS = {
     "/*__MODULES_G__*/": os.path.join(APP, "modules_g.js"),
     "/*__MODULES_H__*/": os.path.join(APP, "modules_h.js"),
     "/*__MODULES_I__*/": os.path.join(APP, "modules_i.js"),
+    "/*__MODULES_J__*/": os.path.join(APP, "modules_j.js"),
     "/*__FX__*/": os.path.join(APP, "fx.js"),
     "/*__EXPLAIN__*/": os.path.join(APP, "explain.js"),
     "/*__MLCACHE__*/": os.path.join(ROOT, "data", "mlcache.js"),
+    "/*__EVIDENCE__*/": os.path.join(ROOT, "data", "evidence.js"),
     "/*__TUTORIAL__*/": os.path.join(APP, "tutorial.js"),
     "/*__SP500__*/": os.path.join(ROOT, "data", "sp500.js"),
     "/*__MARKET__*/": os.path.join(ROOT, "data", "market.js"),
@@ -40,7 +42,7 @@ PARTS = {
 }
 # parts that may be absent in a minimal build. livekey.js is optional so a checkout without it still
 # builds; the app then just falls back to a key pasted into the LIVE badge.
-OPTIONAL = {"/*__MLCACHE__*/", "/*__ALTDATA__*/", "/*__SP500__*/", "/*__MARKET__*/", "/*__FUND__*/", "/*__NEWS__*/", "/*__LIVEKEY__*/"}
+OPTIONAL = {"/*__MLCACHE__*/", "/*__EVIDENCE__*/", "/*__ALTDATA__*/", "/*__SP500__*/", "/*__MARKET__*/", "/*__FUND__*/", "/*__NEWS__*/", "/*__LIVEKEY__*/"}
 
 html = open(os.path.join(APP, "index.html"), encoding="utf-8").read()
 

@@ -1,0 +1,580 @@
+/* AlphaLab quant brain: the evidence layer behind the Competition Center and the Stock Advisor.
+
+   Every engine that votes on a stock, and every rule that sizes the plan, has to show its work here:
+   - a point-in-time factor backtest decides how much each price factor counts (earn-your-vote),
+   - the ML forecast only votes for a name where its own walk-forward record is significant,
+   - the strategy library only times a fund sleeve with strategies its validator rated VALIDATED,
+   - stocks are chosen with a correlation limit and sized with HRP / Black-Litterman on real covariance,
+   - the finished plan is checked against the risk level's budget (volatility and crisis replays).
+   Engines with no point-in-time history (fundamentals, sentiment, peer valuation) cannot be
+   backtested honestly, so they keep fixed judgment weights and are labeled that way in the UI.
+   Only the website's profile-driven path uses this file; the trading bot keeps its own recipe. */
+'use strict';
+(function () {
+const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
+const tOf = a => { const f = a.filter(isFinite); return f.length > 2 && Q.std(f) ? Q.mean(f) / Q.std(f) * Math.sqrt(f.length) : 0; };
+// full weight at the usual t = 2 significance bar, scaled down linearly, nothing below t = 0.5
+const evidenceMult = t => (isFinite(t) && t > 0.5 ? Math.min(1.5, t / 2) : 0);
+UI.evidenceMult = evidenceMult;
+
+// the price factors inside the advisor score: rebuildable at any past date from prices alone
+UI.PRICE_FACTORS = ['z_mom', 'z_trend', 'z_sharpe', 'z_vol', 'z_consistency', 'z_secRel'];
+UI.FACTOR_LABEL = { z_mom: '6-month momentum', z_trend: 'trend vs 40-week average', z_sharpe: '1-year Sharpe',
+  z_vol: 'low volatility', z_consistency: 'share of positive months', z_secRel: 'momentum vs own sector' };
+
+/* ---------- weekly returns on the shared S&P grid (any symbol, cached) ---------- */
+// The weekly bundles label each bar by its Monday but hold that week's LAST close (Yahoo weekly
+// convention). A daily series must therefore be sampled at the last close before the NEXT label, not
+// at the Monday itself, or it runs four days out of step with every stock. AL.weeklyValues samples
+// the Monday, so its stock-vs-SPY betas come out near zero; this aligned version is used here.
+UI._wkv = UI._wkv || {};
+UI.weeklyAligned = function (sym) {
+  if (sym in UI._wkv) return UI._wkv[sym];
+  const sp = AL.sp500();
+  let out = null;
+  if (sp && sp.cols[sym]) out = AL.weeklyValues(sym);
+  else if (sp) {
+    const s = AL.getSeries(sym);
+    if (s && s.dates.length) {
+      const W = sp.wcal, d = s.dates, v = s.values;
+      out = new Array(W.length).fill(null);
+      let j = 0, last = null;
+      for (let k = 0; k < W.length; k++) {
+        const end = k + 1 < W.length ? W[k + 1] : '9999-12-31';
+        while (j < d.length && d[j] < end) { last = v[j]; j++; }
+        // no value before the series starts, and none long after it stopped
+        out[k] = d[0] < end && (j < d.length || Date.parse(W[k]) - Date.parse(d[d.length - 1]) < 14 * 864e5) ? last : null;
+      }
+    }
+  }
+  return (UI._wkv[sym] = out);
+};
+UI._wk = UI._wk || {};
+UI.weeklyRets = function (sym) {
+  if (sym in UI._wk) return UI._wk[sym];
+  let out = null;
+  try {
+    const v = UI.weeklyAligned(sym);
+    if (v) out = v.map((x, i) => i && x != null && v[i - 1] != null && v[i - 1] > 0 ? x / v[i - 1] - 1 : null);
+  } catch (e) { }
+  return (UI._wk[sym] = out);
+};
+// correlation of two names on their common weeks within the last n (null when too little overlap)
+UI.pairCorr = function (a, b, n = 104) {
+  const ra = UI.weeklyRets(a), rb = UI.weeklyRets(b);
+  if (!ra || !rb) return null;
+  const xs = [], ys = [];
+  for (let i = Math.max(1, ra.length - n); i < ra.length; i++) if (ra[i] != null && rb[i] != null) { xs.push(ra[i]); ys.push(rb[i]); }
+  return xs.length >= 40 ? Q.corr(xs, ys) : null;
+};
+
+// beta to the S&P 500 on correctly aligned weekly returns (last two years, at least 40 common weeks).
+// AL.weeklyValues samples daily series at the Monday label while the bundle holds the Friday close,
+// which pushes the classic scoreStocks beta toward zero; this is the website's corrected read.
+UI._abeta = UI._abeta || {};
+UI.alignedBeta = function (sym, n = 104) {
+  if (sym in UI._abeta) return UI._abeta[sym];
+  let out = null;
+  const ra = UI.weeklyRets(sym), rm = UI.weeklyRets('SPY');
+  if (ra && rm) {
+    const xs = [], ys = [];
+    for (let i = Math.max(1, ra.length - n); i < ra.length; i++) if (ra[i] != null && rm[i] != null) { xs.push(rm[i]); ys.push(ra[i]); }
+    if (xs.length >= 40) {
+      const mx = Q.mean(xs), my = Q.mean(ys);
+      let c = 0, v = 0;
+      xs.forEach((x, i) => { c += (x - mx) * (ys[i] - my); v += (x - mx) * (x - mx); });
+      if (v > 0) out = c / v;
+    }
+  }
+  return (UI._abeta[sym] = out);
+};
+
+/* ---------- 1. point-in-time factor backtest ----------
+   S&P 500 weekly bars. Every 4 weeks, each price factor is rebuilt from data up to that week only,
+   exactly as the Stock Advisor computes it today, and ranked against the next 4 weeks' return
+   (Spearman IC). Periods do not overlap, so the t-stat is honest. The calibrated weights are then
+   tested out of sample: at each date they use only ICs that had already resolved. */
+UI.factorBacktest = function () {
+  if (UI._fbt !== undefined) return UI._fbt;
+  UI._fbt = null;
+  const sp = AL.sp500();
+  if (!sp) return null;
+  const sc = UI.scoreStocks();
+  const prior = {};
+  UI.PRICE_FACTORS.forEach(k => prior[k] = sc.weights[k] || 0);
+  const nW = sp.wcal.length, H = 4, STEP = 4, WARM = 80;
+  const syms = Object.keys(sp.cols);
+  const px = syms.map(s => UI.weeklyAligned(s));
+  const sec = syms.map(s => UI.canonSector(sp.cols[s].sec) || sp.cols[s].sec || 'Unknown');
+  const zs = (vals, invert) => {
+    const f = vals.filter(isFinite), m = Q.mean(f), sd = Q.std(f) || 1;
+    return vals.map(v => isFinite(v) ? (invert ? -1 : 1) * clamp((v - m) / sd, -3, 3) : 0);
+  };
+  const ics = {}; UI.PRICE_FACTORS.forEach(k => ics[k] = []);
+  const hist = [];   // per date: { t, z: {k: []}, fwd: [] } kept for the out-of-sample composite test
+  let names = 0;
+  for (let t = WARM; t + H < nW; t += STEP) {
+    const F = { mom: [], trend: [], sharpe: [], vol: [], consistency: [] }, fwd = [], secs = [];
+    for (let i = 0; i < syms.length; i++) {
+      const p = px[i];
+      if (!p || p[t - WARM + 1] == null || p[t] == null || p[t + H] == null || p[t] < 2) continue;
+      const r = [];
+      for (let k = Math.max(1, t - 155); k <= t; k++) if (p[k] != null && p[k - 1] != null) r.push(p[k] / p[k - 1] - 1);
+      const r26 = r.slice(-26), r52 = r.slice(-52);
+      const vol = Q.std(r26) * Math.sqrt(52);
+      if (!isFinite(vol) || vol > 1.5 || p[t - 28] == null || p[t - 2] == null) continue;
+      let pos = 0, tot = 0;
+      for (let m = 0; m + 4 <= r.length; m += 4) { tot++; if (Q.sum(r.slice(m, m + 4)) > 0) pos++; }
+      F.mom.push(p[t - 2] / p[t - 28] - 1);
+      F.trend.push(p[t] / Q.mean(p.slice(t - 39, t + 1).filter(x => x != null)) - 1);
+      F.sharpe.push(Q.std(r52) ? (Q.mean(r52) * 52 - 0.02) / (Q.std(r52) * Math.sqrt(52)) : 0);
+      F.vol.push(vol);
+      F.consistency.push(tot ? pos / tot : 0.5);
+      fwd.push(p[t + H] / p[t] - 1);
+      secs.push(sec[i]);
+    }
+    if (fwd.length < 50) continue;
+    const bySec = {};
+    F.mom.forEach((m, j) => (bySec[secs[j]] = bySec[secs[j]] || []).push(m));
+    const secRel = F.mom.map((m, j) => m - Q.mean(bySec[secs[j]]));
+    const z = { z_mom: zs(F.mom), z_trend: zs(F.trend), z_sharpe: zs(F.sharpe), z_vol: zs(F.vol, true),
+      z_consistency: zs(F.consistency), z_secRel: zs(secRel) };
+    UI.PRICE_FACTORS.forEach(k => ics[k].push(Q.spearman(z[k], fwd)));
+    hist.push({ t, z, fwd });
+    names += fwd.length;
+  }
+  if (hist.length < 24) return null;
+  const calib = icMap => {
+    const w = {}, stat = {};
+    let raw = 0;
+    UI.PRICE_FACTORS.forEach(k => { stat[k] = tOf(icMap[k]); w[k] = prior[k] * evidenceMult(stat[k]); raw += w[k]; });
+    const priorSum = Q.sum(Object.values(prior));
+    UI.PRICE_FACTORS.forEach(k => w[k] = raw > 0 ? w[k] * priorSum / raw : 0);
+    return { w, stat };
+  };
+  // composite ICs: today's prior weights, equal weights, and walk-forward calibrated weights
+  const comp = (h, w) => h.fwd.map((_, j) => UI.PRICE_FACTORS.reduce((s, k) => s + (w[k] || 0) * h.z[k][j], 0));
+  const eqw = {}; UI.PRICE_FACTORS.forEach(k => eqw[k] = 1);
+  const icPrior = [], icEq = [], icCal = [], spread = [];
+  hist.forEach((h, d) => {
+    icPrior.push(Q.spearman(comp(h, prior), h.fwd));
+    icEq.push(Q.spearman(comp(h, eqw), h.fwd));
+    if (d < 12) return;
+    // only dates whose 4-week forward window closed before this one may inform the weights
+    const past = {}; UI.PRICE_FACTORS.forEach(k => past[k] = ics[k].slice(0, d));
+    const cw = calib(past).w;
+    if (!Q.sum(Object.values(cw))) { icCal.push(0); spread.push(0); return; }
+    const c = comp(h, cw);
+    icCal.push(Q.spearman(c, h.fwd));
+    // top-minus-bottom quintile return for that 4-week period
+    const ord = c.map((v, j) => [v, h.fwd[j]]).sort((a, b) => a[0] - b[0]), q = Math.floor(ord.length / 5);
+    spread.push(Q.mean(ord.slice(-q).map(x => x[1])) - Q.mean(ord.slice(0, q).map(x => x[1])));
+  });
+  const now = calib(ics);
+  const out = {
+    from: sp.wcal[hist[0].t], to: sp.wcal[hist[hist.length - 1].t], periods: hist.length, horizonWeeks: H,
+    avgNames: Math.round(names / hist.length), prior, weights: now.w,
+    factors: UI.PRICE_FACTORS.map(k => ({ key: k, label: UI.FACTOR_LABEL[k], prior: prior[k], weight: now.w[k],
+      ic: Q.mean(ics[k].filter(isFinite)), t: now.stat[k], hit: ics[k].filter(x => x > 0).length / ics[k].length })),
+    composite: {
+      prior: { ic: Q.mean(icPrior.filter(isFinite)), t: tOf(icPrior) },
+      equal: { ic: Q.mean(icEq.filter(isFinite)), t: tOf(icEq) },
+      calibrated: { ic: Q.mean(icCal.filter(isFinite)), t: tOf(icCal), n: icCal.length,
+        spreadAnn: Q.mean(spread) * (52 / H), spreadT: tOf(spread) },
+    },
+    caveats: [
+      'Universe is today\'s S&P 500 members, so companies that were dropped or went bust are missing (survivorship bias). That flatters every factor a little, momentum most.',
+      'One sample of about ten years, mostly a bull market. A factor that failed here is switched off, never flipped to the opposite bet.',
+      'Fundamentals, sentiment and peer valuation are snapshots with no history, so they cannot be backtested and keep fixed judgment weights.',
+    ],
+  };
+  out.compositeMult = evidenceMult(out.composite.calibrated.t);
+  return (UI._fbt = out);
+};
+
+// advisor score with the price-factor weights replaced by the backtest-calibrated ones
+UI.calScore = function (r) {
+  if (!r) return 0;
+  let bt = null;
+  try { bt = UI.factorBacktest(); } catch (e) { }
+  if (!bt) return r.score || 0;
+  let s = r.score || 0;
+  for (const k of UI.PRICE_FACTORS) s += ((bt.weights[k] || 0) - (bt.prior[k] || 0)) * (r[k] || 0);
+  return s;
+};
+
+/* ---------- 2. ML forecast evidence, per name ----------
+   The same ridge model the ML vote uses, run walk-forward (train only on the past, predict the next
+   bar), scored on non-overlapping forecast windows so the t-stat is not inflated. Prebuilt in CI
+   (data/evidence.js); computed on demand for anything missing. */
+UI._mlEv = UI._mlEv || {};
+UI.mlEvidence = function (sym) {
+  if (sym in UI._mlEv) return UI._mlEv[sym];
+  const pre = window.ALPHALAB_EVIDENCE && window.ALPHALAB_EVIDENCE.ml;
+  if (pre && sym in pre) return (UI._mlEv[sym] = pre[sym]);
+  return (UI._mlEv[sym] = UI.computeMlEvidence(sym));
+};
+UI.computeMlEvidence = function (sym) {
+  try {
+    const ser = AL.getSeries(sym);
+    if (!ser || ser.cls !== 'Equity' || typeof ML === 'undefined' || !ML.makeFeatures) return null;
+    const F = ML.makeFeatures(sym, 5);
+    if (!F || F.X.length < 400) return null;                 // same gate as the live ML vote
+    const wf = ML.walkForward(F, 'ridge', { lambda: 3, refit: 126, minTrain: Math.max(200, Math.min(750, Math.floor(F.X.length / 2))) });
+    const xs = [], ys = [];
+    for (let i = 0; i < wf.preds.length; i += 5) if (isFinite(wf.preds[i]) && isFinite(F.y[i])) { xs.push(wf.preds[i]); ys.push(F.y[i]); }
+    if (xs.length < 40) return null;
+    const ic = Q.spearman(xs, ys);
+    const t = ic * Math.sqrt((xs.length - 2) / Math.max(1e-9, 1 - ic * ic));
+    const hit = xs.filter((x, i) => Math.sign(x) === Math.sign(ys[i])).length / xs.length;
+    return { ic: +ic.toFixed(4), t: +t.toFixed(2), n: xs.length, hit: +hit.toFixed(3) };
+  } catch (e) { return null; }
+};
+
+/* ---------- 3. strategy-library evidence ----------
+   Runs the library's own validator (walk-forward split, 3x cost stress, parameter perturbation,
+   probabilistic Sharpe) on every single-instrument strategy and records its signal today. Only a
+   VALIDATED strategy is allowed to vote. Prebuilt in CI; too heavy to run on every page load. */
+function currentSignal(e) {
+  const def = e.def, s = AL.getSeries(def.sym);
+  if (!s) return null;
+  const w = AL.window(s, e.from || '2005-01-01'), px = w.values;
+  const rets = px.map((v, i) => i ? v / px[i - 1] - 1 : 0);
+  const aux = S.aux(w.dates);
+  if (def.macro) aux.macro = S.alignMacro(w.dates, def.macro);
+  const sig = S.engines[def.engine](px, rets, { ...def.params }, aux);
+  const x = sig[sig.length - 1];
+  return isFinite(x) ? +clamp(x, -1, 1).toFixed(3) : null;
+}
+UI.buildStrategyEvidence = function () {
+  const out = { asof: AL.asof, built: new Date().toISOString().slice(0, 16), tested: 0, bySym: {} };
+  if (typeof S === 'undefined' || !S.registry) return out;
+  for (const e of S.registry) {
+    if (e.status !== 'ok' || !e.def || e.def.kind !== 'single' || !AL.getSeries(e.def.sym)) continue;
+    try {
+      const v = S.validate(e);
+      if (!v || !v.full || !v.full.stats) continue;
+      out.tested++;
+      (out.bySym[e.def.sym] = out.bySym[e.def.sym] || []).push({ id: e.id, name: e.name, verdict: v.verdict,
+        sharpe: +v.full.stats.sharpe.toFixed(2), oos: v.oos ? +v.oos.sharpe.toFixed(2) : null, psr: +v.psr.toFixed(3), signal: currentSignal(e) });
+    } catch (err) { }
+  }
+  UI._stEv = out;
+  AL.store.set('strategy_evidence', out);
+  return out;
+};
+UI.strategyEvidence = function () {
+  if (UI._stEv) return UI._stEv;
+  const pre = window.ALPHALAB_EVIDENCE && window.ALPHALAB_EVIDENCE.strategies;
+  const local = AL.store.get('strategy_evidence', null);
+  const best = [pre, local].filter(Boolean).sort((a, b) => String(b.asof).localeCompare(String(a.asof)))[0];
+  return (UI._stEv = best || null);
+};
+// what the VALIDATED strategies on one instrument say today: s = average long exposure in [0, 1]
+UI.timingVote = function (sym) {
+  const ev = UI.strategyEvidence();
+  const list = ev && ev.bySym[sym] ? ev.bySym[sym].filter(x => x.verdict === 'VALIDATED' && x.signal != null) : [];
+  if (!list.length) return null;
+  const s = Q.mean(list.map(x => clamp(x.signal, 0, 1)));
+  return { sym, n: list.length, s, list, asof: ev.asof };
+};
+
+/* ---------- 4. evidence-weighted conviction ----------
+   Same engines as the classic six-engine fusion (reused as is, so the bot is untouched), but each
+   vote is weighted by its evidence: the ML vote needs a significant walk-forward record for this
+   name, the factor vote uses calibrated weights and is scaled by the out-of-sample composite test,
+   validated library strategies on the name get a vote, and snapshot engines keep judgment weights. */
+UI.brainConviction = function (sym, scored) {
+  const base = UI.symConviction(sym, scored);
+  if (!base) return null;
+  const votes = [];
+  const push = (engine, v, w, evidence, why) => votes.push({ engine, v: clamp(v, -1, 1), w, evidence, why });
+  const f = AL.fmt;
+  if (base.dec && base.dec.coverage > 0)
+    push('Decision engine', base.dec.overall / 0.4, 1.0, 'judgment', `Decision engine: ${base.dec.call} (${base.dec.overall >= 0 ? '+' : ''}${base.dec.overall.toFixed(2)})`);
+  if (base.ml) {
+    const ev = UI.mlEvidence(sym), m = ev ? (ev.t >= 1 ? evidenceMult(ev.t) : 0) : 0;
+    push('ML forecast', base.ml.z, 0.8 * m, ev ? 'backtested' : 'untested',
+      `ML model projects ${base.ml.pred >= 0 ? '+' : ''}${(base.ml.pred * 100).toFixed(1)}% next period` +
+      (ev ? `; walk-forward IC ${f.n(ev.ic, 3)} (t=${f.n(ev.t, 1)}, ${ev.n} tests)${m ? '' : ', not significant, so it does not vote'}` : '; no out-of-sample record, so it does not vote'));
+  }
+  const row = scored && scored.bySym ? scored.bySym[sym] : null;
+  if (row) {
+    const bt = UI.factorBacktest(), cs = UI.calScore(row);
+    push('Factor score', cs / 0.6, 0.7 * (bt ? bt.compositeMult : 1), bt ? 'backtested' : 'judgment',
+      `Calibrated factor score ${cs >= 0 ? '+' : ''}${cs.toFixed(2)}` + (bt ? ` (factor backtest t=${f.n(bt.composite.calibrated.t, 1)})` : ''));
+  }
+  if (base.peer) push('Peer valuation', base.peer.z, 0.6, 'judgment', base.peer.why);
+  const alt = base.alt;
+  if (alt) {
+    const parts = [];
+    if (alt.bullRatio != null) parts.push((alt.bullRatio - 0.5) * 2);
+    if (alt.toneTrend != null) parts.push(clamp(alt.toneTrend, -1, 1));
+    if (parts.length) push('Sentiment', Q.mean(parts), 0.5, 'judgment',
+      'Sentiment: ' + [alt.bullRatio != null ? `${Math.round(alt.bullRatio * 100)}% of social chatter bullish` : null,
+        alt.toneTrend != null ? (alt.toneTrend > 0.05 ? 'news tone improving' : alt.toneTrend < -0.05 ? 'news tone worsening' : 'news tone flat') : null].filter(Boolean).join(', '));
+  }
+  if (base.seas) push('Seasonality', base.seas.z, 0.35, 'significance-gated', base.seas.why);
+  const tv = UI.timingVote(sym);
+  if (tv) push('Strategy library', tv.s * 2 - 1, 0.5, 'backtested', `${tv.n} validated strateg${tv.n > 1 ? 'ies' : 'y'} on ${sym}: ${tv.s >= 0.5 ? 'long' : 'out'} today`);
+  const live = votes.filter(v => v.w > 0);
+  if (!live.length) return null;
+  const wsum = Q.sum(live.map(v => v.w));
+  const conviction = live.reduce((s, v) => s + v.v * v.w, 0) / wsum;
+  const agree = live.filter(v => v.v !== 0 && Math.sign(v.v) === Math.sign(conviction)).length;
+  return { sym, conviction, agree, nEngines: live.length, votes, why: live.map(v => v.why),
+    dec: base.dec, ml: base.ml, peer: base.peer, seas: base.seas, alt: base.alt };
+};
+
+/* ---------- 5. covariance-aware sizing of the stock sleeve ----------
+   Pairwise covariance on up to two years of weekly returns, annualized, shrunk 30% toward the
+   diagonal so a noisy estimate cannot drive an extreme answer. Hierarchical Risk Parity spreads
+   risk across clusters of stocks that move together; Black-Litterman turns each name's conviction
+   into an expected-return view around an equal-weight prior, and max-Sharpe sizes on that. The
+   risk level sets the blend: pure HRP (conservative) through mostly Black-Litterman (aggressive). */
+UI.sleeveCov = function (syms, fallbackVol) {
+  const n = 104, k = syms.length;
+  const R = syms.map(s => UI.weeklyRets(s));
+  const vol = syms.map((s, i) => {
+    const r = R[i] ? R[i].slice(-n).filter(x => x != null) : [];
+    return r.length >= 26 ? Q.std(r) * Math.sqrt(52) : (fallbackVol && fallbackVol[i]) || 0.3;
+  });
+  const C = Array.from({ length: k }, () => new Array(k).fill(0));
+  const Rho = Array.from({ length: k }, () => new Array(k).fill(1));
+  for (let i = 0; i < k; i++) {
+    C[i][i] = vol[i] * vol[i];
+    for (let j = i + 1; j < k; j++) {
+      const c = UI.pairCorr(syms[i], syms[j], n);
+      const rho = c == null || !isFinite(c) ? 0.3 : c;       // too little overlap: assume a typical stock correlation
+      Rho[i][j] = Rho[j][i] = rho;
+      C[i][j] = C[j][i] = 0.7 * rho * vol[i] * vol[j];
+    }
+  }
+  return { C, R: Rho, vol };
+};
+// water-fill: no weight above cap, the excess goes to the uncapped names; if all are capped the
+// remainder is returned unallocated (the caller sends it to the core index)
+UI.capWeights = function (w, cap) {
+  w = w.slice();
+  for (let it = 0; it < 20; it++) {
+    const over = w.map((x, i) => x > cap + 1e-12 ? i : -1).filter(i => i >= 0);
+    if (!over.length) break;
+    let excess = 0;
+    over.forEach(i => { excess += w[i] - cap; w[i] = cap; });
+    const free = w.map((x, i) => x < cap - 1e-12 ? i : -1).filter(i => i >= 0);
+    const fs = Q.sum(free.map(i => w[i]));
+    if (!free.length || fs <= 0) break;
+    free.forEach(i => w[i] += excess * w[i] / fs);
+  }
+  return w;
+};
+UI.sizeSleeve = function (picks, key, cap) {
+  const P = UI.RISK_PROFILES[key] || UI.RISK_PROFILES.balanced;
+  const k = picks.length;
+  if (!k) return { w: [], method: '-', sleeveVol: null, divRatio: null, maxCorr: null };
+  const { C, R } = UI.sleeveCov(picks.map(p => p.sym), picks.map(p => p.vol));
+  let w = k === 1 ? [1] : Q.hrp(C, R);
+  let method = 'Hierarchical Risk Parity';
+  const bl = P.blMix || 0;
+  if (k > 1 && bl > 0) {
+    const eqw = new Array(k).fill(1 / k);
+    const Pi = Q.blackLitterman(C, eqw, []).implied;
+    const views = picks.map((p, i) => ({ idx: i, ret: Pi[i] + 0.10 * clamp(p.conv || 0, -1, 1),
+      conf: clamp(p.agreeFrac != null ? 0.25 + 0.5 * p.agreeFrac : 0.5, 0.25, 0.75) }));
+    const mu = Q.blackLitterman(C, eqw, views).blended;
+    const ms = Q.maxSharpe(mu, C);
+    w = w.map((x, i) => (1 - bl) * x + bl * ms[i]);
+    method = `${Math.round((1 - bl) * 100)}% Hierarchical Risk Parity + ${Math.round(bl * 100)}% Black-Litterman max-Sharpe`;
+  }
+  const s = Q.sum(w) || 1;
+  w = UI.capWeights(w.map(x => x / s), cap || 1);
+  const ws = Q.sum(w) || 1, wn = w.map(x => x / ws);
+  const sleeveVol = Q.portVol(wn, C);
+  const avgVol = Q.sum(wn.map((x, i) => x * Math.sqrt(C[i][i])));
+  let maxCorr = null;
+  for (let i = 0; i < k; i++) for (let j = i + 1; j < k; j++) if (maxCorr == null || R[i][j] > maxCorr) maxCorr = R[i][j];
+  // the same sleeve equal-weighted, for the "what did the optimizer buy you" comparison
+  const eq = new Array(k).fill(1 / k);
+  return { w, method, sleeveVol, eqVol: Q.portVol(eq, C), divRatio: sleeveVol ? avgVol / sleeveVol : null, maxCorr };
+};
+
+/* ---------- 6. plan-level risk: volatility, monthly VaR / CVaR, drawdown and crisis replays ----------
+   Built on the ten-year weekly grid. A holding with no history in a given week (a recent listing,
+   crypto before 2014) is stood in for by its beta times the S&P 500 that week, and flagged. */
+UI.STRESS = [
+  { key: '2008', name: '2008 financial crisis', from: '2007-10-09', to: '2009-03-09' },
+  { key: 'COVID', name: 'COVID crash 2020', from: '2020-02-19', to: '2020-03-23' },
+  { key: '2022', name: '2022 rate shock', from: '2022-01-03', to: '2022-10-12' },
+];
+function pxAt(sym, date) {
+  const s = AL.getSeries(sym);
+  if (!s || !s.dates.length || s.dates[0] > date) return weeklyPxAt(sym, date);
+  let lo = 0, hi = s.dates.length - 1;
+  while (lo < hi) { const m = (lo + hi + 1) >> 1; if (s.dates[m] <= date) lo = m; else hi = m - 1; }
+  // a series that stopped long before the date (or started after it) cannot speak for that date
+  return Math.abs(Date.parse(date) - Date.parse(s.dates[lo])) < 12 * 864e5 ? s.values[lo] : weeklyPxAt(sym, date);
+}
+// fallback for names that only have weekly bars (S&P 500 from 2016, total market from 2023): the
+// close of the last week that ended on or before the date (a bar labeled Monday closes that Friday)
+function weeklyPxAt(sym, date) {
+  const sp = AL.sp500(), v = UI.weeklyAligned(sym);
+  if (!sp || !v) return null;
+  const t = Date.parse(date);
+  let k = -1;
+  for (let i = 0; i < sp.wcal.length; i++) { if (Date.parse(sp.wcal[i]) + 4 * 864e5 <= t) k = i; else break; }
+  if (k < 0 || v[k] == null) return null;
+  return t - (Date.parse(sp.wcal[k]) + 4 * 864e5) < 12 * 864e5 ? v[k] : null;
+}
+UI.planRisk = function (wBySym) {
+  const syms = Object.keys(wBySym).filter(s => wBySym[s] > 0);
+  const spy = UI.weeklyRets('SPY');
+  if (!syms.length || !spy) return null;
+  const sc = UI._scoreCache;
+  const betaOf = s => { const ser = AL.getSeries(s); if (ser && ser.cls === 'Crypto') return 2; const ab = UI.alignedBeta(s); if (ab != null) return clamp(0.67 * ab + 0.33, 0.3, 2); const r = sc && sc.bySym[s]; return r && isFinite(r.beta) ? r.beta : 1; };
+  const cols = syms.map(s => UI.weeklyRets(s));
+  const blended = [];
+  let proxyWeeks = 0;
+  for (let t = 1; t < spy.length; t++) {
+    if (spy[t] == null) continue;
+    let r = 0, px = 0;
+    syms.forEach((s, i) => {
+      const x = cols[i] && cols[i][t] != null ? cols[i][t] : null;
+      if (x == null) px += wBySym[s];
+      r += wBySym[s] * (x != null ? x : betaOf(s) * spy[t]);
+    });
+    if (px > 0.02) proxyWeeks++;
+    blended.push(r);
+  }
+  if (blended.length < 52) return null;
+  const vol = Q.std(blended) * Math.sqrt(52);
+  const months = [];
+  for (let i = 0; i + 4 <= blended.length; i += 4) months.push(blended.slice(i, i + 4).reduce((a, x) => a * (1 + x), 1) - 1);
+  const sorted = months.slice().sort((a, b) => a - b), q = Math.max(1, Math.floor(sorted.length * 0.05));
+  const eq = Q.equity(blended);
+  let peak = eq[0], maxDD = 0;
+  eq.forEach(v => { peak = Math.max(peak, v); maxDD = Math.min(maxDD, v / peak - 1); });
+  const spyPx = d => pxAt('SPY', d);
+  const stress = UI.STRESS.map(sc2 => {
+    const mkt = spyPx(sc2.to) / spyPx(sc2.from) - 1;
+    const proxied = [];
+    let ret = 0;
+    syms.forEach(s => {
+      const a = pxAt(s, sc2.from), b = pxAt(s, sc2.to);
+      if (a > 0 && b > 0) ret += wBySym[s] * (b / a - 1);
+      else { proxied.push(s); ret += wBySym[s] * Math.max(-1, betaOf(s) * mkt); }
+    });
+    return { ...sc2, ret, mkt, proxied, proxiedW: Q.sum(proxied.map(s => wBySym[s])) };
+  });
+  // a replay where more than half the plan had to be stood in for is indicative only: it is shown but
+  // does not drive the risk budget (the volatility limit still applies to every holding)
+  stress.forEach(x => { x.indicative = x.proxiedW > 0.5; });
+  const byLoss = stress.slice().sort((a, b) => a.ret - b.ret);
+  const worst = byLoss.find(x => !x.indicative) || null, worstAny = byLoss[0];
+  return { vol, var95m: -Q.quantile(sorted, 0.05), cvar95m: -Q.mean(sorted.slice(0, q)), maxDD, stress, worst, worstAny,
+    weeks: blended.length, from: AL.sp500().wcal[1], proxyWeeks };
+};
+
+/* ---------- 7. "How this plan was decided": one panel shared by the Competition Center and the
+   Stock Advisor, so every number the plan leans on is on screen with its evidence ---------- */
+const sgn = (x, d = 2) => (x >= 0 ? '+' : '') + (+x).toFixed(d);
+UI.engineAgreeCell = function (v) {
+  if (!v || !v.votes) return '<span class="note">-</span>';
+  const live = v.votes.filter(x => x.w > 0);
+  const agree = live.filter(x => x.v !== 0 && Math.sign(x.v) === Math.sign(v.conv)).length;
+  const tip = v.votes.map(x => `${x.engine}: ${sgn(x.v)} x weight ${x.w.toFixed(2)}${x.w > 0 ? '' : ' (no vote)'}. ${x.why}`).join('\n');
+  return `<span class="chip ${v.conv >= 0 ? 'on' : ''}" title="${AL.fmt.esc(tip)}">${agree} of ${live.length}</span>`;
+};
+UI.brainPanel = function (t, opts = {}) {
+  const f = AL.fmt, b = t && t.brain;
+  if (!b) return UI.panel('How this plan was decided', '<div class="empty">This plan was saved before the quant brain existed. Rebuild the plan to see the full evidence.</div>');
+  const bt = UI.factorBacktest(), stEv = UI.strategyEvidence();
+  const P = t.profile || UI.RISK_PROFILES[t.profileKey] || {};
+  const allSt = stEv ? Object.values(stEv.bySym).flat() : [];
+  const nVal = allSt.filter(x => x.verdict === 'VALIDATED').length;
+  const mlPre = window.ALPHALAB_EVIDENCE && window.ALPHALAB_EVIDENCE.ml;
+  const mlAll = mlPre ? Object.values(mlPre) : [];
+  const mlSig = mlAll.filter(x => x.t >= 1).length;
+  const badge = (ok, yes, no) => `<span class="badge ${ok ? 'ok' : 'dim'}">${ok ? yes : no}</span>`;
+  const sec = (title, html) => `<div style="margin-top:14px"><div style="font-weight:600;margin-bottom:6px">${title}</div>${html}</div>`;
+
+  // 1. the engines and how much each is trusted
+  const engines = [
+    ['Decision engine', 'fundamentals, valuation, quality, momentum and analyst view in one Buy / Sell verdict', '1.00', 'judgment', true],
+    ['ML forecast', 'ridge model on price and volume features, next-week return', `0.80 x evidence`, mlAll.length ? `walk-forward record on ${mlAll.length} names, ${mlSig} significant (t >= 1)` : 'computed per name on demand', true],
+    ['Factor score', 'Stock Advisor score with backtest-calibrated price-factor weights', bt ? `0.70 x ${bt.compositeMult.toFixed(2)}` : '0.70', bt ? `out-of-sample composite t = ${f.n(bt.composite.calibrated.t, 2)}` : 'backtest unavailable', !bt || bt.compositeMult > 0],
+    ['Peer valuation', 'P/E, P/B, margins vs sector peers', '0.60', 'judgment (snapshot, no history to test)', true],
+    ['Sentiment', 'social chatter and news tone', '0.50', 'judgment (snapshot, no history to test)', true],
+    ['Seasonality', 'calendar tilt, only when statistically significant', '0.35', 'significance-gated', true],
+    ['Strategy library', 'validated rule-based strategies on the same instrument', '0.50', stEv ? `${nVal} of ${stEv.tested} strategies validated (as of ${stEv.asof})` : 'not run yet', !!stEv && nVal > 0],
+  ];
+  const engHtml = `<table class="tbl"><thead><tr><th>Engine</th><th>What it reads</th><th class="r">Vote weight</th><th>Evidence</th><th></th></tr></thead><tbody>` +
+    engines.map(([n, what, w, ev, on]) => `<tr><td class="t"><b>${n}</b></td><td class="t" style="font-size:11px">${what}</td><td class="r">${w}</td><td class="t" style="font-size:11px">${ev}</td><td>${badge(on, 'voting', 'silenced')}</td></tr>`).join('') +
+    `</tbody></table><div class="note" style="margin-top:6px">Every engine votes on a -1 to +1 scale and conviction is the weighted average. An engine that failed its own out-of-sample test gets weight 0: it is switched off, never flipped to the opposite bet. Hover the "engines agree" count next to any stock for its individual votes.</div>`;
+
+  // 2. factor backtest
+  let btHtml = '<div class="empty">Factor backtest unavailable (needs the S&P 500 weekly bundle).</div>';
+  if (bt) {
+    const c = bt.composite;
+    btHtml = `<div class="note" style="margin-bottom:6px">Every ${bt.horizonWeeks} weeks from ${bt.from} to ${bt.to} (${bt.periods} non-overlapping periods, about ${bt.avgNames} S&P 500 names each), each price factor was rebuilt from data up to that week only and ranked against the next ${bt.horizonWeeks} weeks' return. IC is the rank correlation; t above 2 is strong evidence, below 0.5 is noise.</div>
+      <table class="tbl"><thead><tr><th>Factor</th><th class="r">Mean IC</th><th class="r">t-stat</th><th class="r">Periods right</th><th class="r">Weight before</th><th class="r">Weight now</th></tr></thead><tbody>` +
+      bt.factors.map(x => `<tr><td class="t">${x.label}</td><td class="r ${x.ic >= 0 ? 'up' : 'dn'}">${sgn(x.ic, 3)}</td><td class="r">${f.n(x.t, 2)}</td><td class="r">${f.pct(x.hit, 0)}</td><td class="r">${x.prior.toFixed(2)}</td><td class="r"><b>${x.weight.toFixed(2)}</b></td></tr>`).join('') +
+      `</tbody></table>
+      <div class="note" style="margin-top:6px">Composite with the old weights: IC ${sgn(c.prior.ic, 3)} (t ${f.n(c.prior.t, 2)}). Equal weights: IC ${sgn(c.equal.ic, 3)} (t ${f.n(c.equal.t, 2)}). Calibrated walk-forward, using only ICs known at the time: IC ${sgn(c.calibrated.ic, 3)} (t ${f.n(c.calibrated.t, 2)}), top-minus-bottom fifth ${f.spct(c.calibrated.spreadAnn)} a year.
+      ${bt.compositeMult > 0 ? 'The calibrated factors held up out of sample, so the factor vote counts.' : '<b>Honest result: on this sample the price factors did not predict the next month for S&P 500 stocks, so their vote is switched off.</b> Picks now lean on the engines that did pass (and on judgment engines that cannot be tested), rather than on a score that only looked good in hindsight.'}</div>
+      <ul class="note" style="margin:6px 0 0;padding-left:18px">${bt.caveats.map(x => `<li>${f.esc(x)}</li>`).join('')}</ul>`;
+  }
+
+  // 3. stock sleeve optimizer
+  const s = b.sleeve;
+  const slHtml = s ? `<div class="tiles">
+      <div class="tile"><div class="t-label">Sizing method</div><div class="t-value" style="font-size:13px">${s.method}</div></div>
+      <div class="tile"><div class="t-label">Stock sleeve volatility</div><div class="t-value">${f.pct(s.sleeveVol, 1)}</div><div class="t-delta note">equal-weighted: ${f.pct(s.eqVol, 1)}</div></div>
+      <div class="tile"><div class="t-label">Diversification ratio</div><div class="t-value">${f.n(s.divRatio, 2)}</div><div class="t-delta note">1.0 = no diversification</div></div>
+      <div class="tile"><div class="t-label">Most correlated pair</div><div class="t-value">${s.maxCorr != null ? f.n(s.maxCorr, 2) : '-'}</div><div class="t-delta note">limit ${f.n(P.maxCorr, 2)}</div></div>
+    </div>
+    <div class="note" style="margin-top:6px">Sized on two years of weekly returns (covariance shrunk 30% toward independence so noise cannot drive an extreme answer). Hierarchical Risk Parity spreads risk across clusters of stocks that move together; Black-Litterman turns each stock's conviction into an expected-return view and max-Sharpe sizes on it. No stock above ${f.pct(P.maxName, 0)} of the plan.
+    ${s.skipped.length ? `Passed over for moving too much like a stock already picked: ${s.skipped.map(x => `<b>${x.sym}</b> (${f.n(x.corr, 2)} with ${x.with})`).join(', ')}.` : 'No candidate had to be passed over for correlation.'}</div>` : '<div class="empty">No individual stocks in this plan.</div>';
+
+  // 4. risk budget
+  const r = b.risk;
+  const rkHtml = r ? `<div class="tiles">
+      <div class="tile"><div class="t-label">Plan volatility</div><div class="t-value">${f.pct(r.vol, 1)}</div><div class="t-delta note">budget ${f.pct(b.budget.vol, 1)}</div></div>
+      <div class="tile"><div class="t-label">Monthly VaR 95%</div><div class="t-value dn">${f.pct(r.var95m, 1)}</div><div class="t-delta note">1 month in 20 loses more</div></div>
+      <div class="tile"><div class="t-label">Monthly CVaR 95%</div><div class="t-value dn">${f.pct(r.cvar95m, 1)}</div><div class="t-delta note">average of those bad months</div></div>
+      <div class="tile"><div class="t-label">Max drawdown</div><div class="t-value dn">${f.pct(-r.maxDD, 1)}</div><div class="t-delta note">since ${r.from}</div></div>
+      <div class="tile"><div class="t-label">Invested after budget</div><div class="t-value">${f.pct(b.scaledTo, 0)}</div><div class="t-delta note">${b.scaledTo < 0.998 ? 'rest held as cash' : 'budget not binding'}</div></div>
+    </div>
+    <table class="tbl" style="margin-top:8px"><thead><tr><th>Crisis replay</th><th>Window</th><th class="r">This plan</th><th class="r">S&P 500</th><th>Data</th></tr></thead><tbody>` +
+    r.stress.map(x => `<tr><td class="t">${x.name}</td><td class="t" style="font-size:11px">${x.from} to ${x.to}</td><td class="r ${x.ret >= 0 ? 'up' : 'dn'}"><b>${f.spct(x.ret)}</b></td><td class="r">${f.spct(x.mkt)}</td>
+      <td class="t" style="font-size:11px">${x.proxied.length ? `${f.pct(x.proxiedW, 0)} of plan estimated from beta x S&P (${x.proxied.slice(0, 6).join(', ')}${x.proxied.length > 6 ? '...' : ''} had no prices then)${x.indicative ? '; indicative only, not enforced' : ''}` : 'real prices for every holding'}</td></tr>`).join('') +
+    `</tbody></table><div class="note" style="margin-top:6px">The whole plan, funds, stocks, bonds, gold and crypto together, replayed on ten years of weekly returns and through three real crises. If volatility tops ${f.pct(b.budget.vol, 1)} or a measured crisis loss tops ${f.pct(-b.budget.stress, 0)}, every position is scaled down together and the difference is held as cash.</div>` : '<div class="empty">Risk replay unavailable.</div>';
+
+  // 5. strategy-library timing
+  const tmHtml = b.timing && b.timing.length ? `<table class="tbl"><thead><tr><th>Fund</th><th class="r">Validated strategies</th><th class="r">Long today</th><th class="r">Position kept</th><th>Strategies</th></tr></thead><tbody>` +
+    b.timing.map(x => `<tr><td class="sym">${x.sym}</td><td class="r">${x.n}</td><td class="r">${f.pct(x.s, 0)}</td><td class="r"><b>${f.pct(x.factor, 0)}</b></td><td class="t" style="font-size:11px">${x.ids.join(', ')}</td></tr>`).join('') +
+    `</tbody></table><div class="note" style="margin-top:6px">Only strategies that passed the library's validator (walk-forward out-of-sample, triple trading costs, parameter perturbation and probabilistic Sharpe) vote. When they are out of a fund, up to a quarter of it moves to cash. Evidence as of ${stEv ? stEv.asof : '-'}.</div>`
+    : `<div class="empty">${stEv ? 'No validated strategy covers the funds in this plan.' : 'The strategy library has not been validated on this data yet.'}</div>`;
+  const runBtn = `<button class="btn small" id="brain-run-lib" style="margin-top:8px">${stEv ? 'Re-run the strategy library on today\'s data' : 'Run the strategy library now'}</button>`;
+
+  return UI.panel('How this plan was decided', `
+    <div class="note">Every quant tool in AlphaLab feeds this plan, and each one is trusted only as far as its own track record goes. Below: which engines vote and why, what the factor backtest found, how the stocks were sized, what the whole plan would have done in real crises, and what the validated strategies say about each fund.</div>
+    ${sec('1. Engines and their evidence', engHtml)}
+    ${sec('2. Factor backtest (point-in-time, S&P 500)', btHtml)}
+    ${opts.noSleeve ? '' : sec('3. Stock sizing', slHtml)}
+    ${opts.noRisk ? '' : sec('4. Risk budget and crisis replays', rkHtml)}
+    ${opts.noTiming ? '' : sec('5. Strategy-library timing', tmHtml + runBtn)}`);
+};
+// wire the panel's one button; rebuild() is the host screen's re-render
+UI.bindBrainPanel = function (root, rebuild) {
+  const btn = root.querySelector('#brain-run-lib');
+  if (!btn) return;
+  btn.addEventListener('click', () => {
+    btn.disabled = true; btn.textContent = 'Validating every strategy, about 15 seconds...';
+    setTimeout(() => {
+      try { UI._stEv = null; UI.buildStrategyEvidence(); UI._picksCache = {}; if (UI.toast) UI.toast('Strategy library validated on today\'s data', 'ok'); }
+      catch (e) { if (UI.toast) UI.toast('Strategy library run failed: ' + e.message, 'bad'); }
+      rebuild();
+    }, 30);
+  });
+};
+})();

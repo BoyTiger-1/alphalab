@@ -26,14 +26,17 @@ UI.pickSym = list => list.find(s => AL.getSeries(s) && !UI.isExcluded(s));
 UI.RISK_PROFILES = {
   conservative: { label: 'Conservative', blurb: 'capital preservation first', eq: 0.35, bond: 0.45, real: 0.12, crypto: 0.01, cash: 0.07, vt: 0.07,
     stockShare: 0.45, nStocks: 8, maxVol: 0.35, maxBeta: 1.1, perSector: 2, maxName: 0.05, weighting: 'invvol', spOnly: true,
+    maxCorr: 0.70, blMix: 0, budget: { vol: 0.085, stress: -0.22 },
     tilt: { vol: 0.20, quality: 0.10, consistency: 0.08, mom: 0, growth: 0, beta: -0.25 },
     stockStyle: 'calm, lower-beta, high-quality companies' },
   balanced: { label: 'Balanced', blurb: 'growth with a real safety sleeve', eq: 0.55, bond: 0.25, real: 0.12, crypto: 0.03, cash: 0.05, vt: 0.10,
     stockShare: 0.60, nStocks: 10, maxVol: 0.60, maxBeta: 1.6, perSector: 2, maxName: 0.07, weighting: 'blend',
+    maxCorr: 0.75, blMix: 0.5, budget: { vol: 0.13, stress: -0.36 },
     tilt: { vol: 0.03, quality: 0.03, consistency: 0, mom: 0.03, growth: 0.03, beta: 0 },
     stockStyle: 'the strongest all-round names, any style' },
   aggressive: { label: 'Aggressive', blurb: 'maximize growth, accept bigger swings', eq: 0.72, bond: 0.08, real: 0.12, crypto: 0.06, cash: 0.02, vt: 0.18,
     stockShare: 0.82, nStocks: 12, maxVol: 0.95, maxBeta: 3, perSector: 3, maxName: 0.09, weighting: 'conviction',
+    maxCorr: 0.80, blMix: 0.7, budget: { vol: 0.22, stress: -0.55 },
     tilt: { vol: -0.08, quality: 0, consistency: 0, mom: 0.15, growth: 0.12, beta: 0.12 },
     stockStyle: 'high-momentum, high-growth, higher-beta names' },
 };
@@ -103,11 +106,14 @@ UI.isOperatingCo = function (r) {
 // adj = the profile's extra factor tilt; score = advisor score + adj, used to rank candidates.
 UI.profileFit = function (r, key) {
   const P = UI.RISK_PROFILES[key] || UI.RISK_PROFILES.balanced, t = P.tilt;
-  const beta = isFinite(r.beta) ? r.beta : 1;
+  // beta on correctly aligned weekly returns when the quant brain is loaded (see UI.alignedBeta)
+  const ab = UI.alignedBeta ? UI.alignedBeta(r.sym) : null;
+  const beta = ab != null ? ab : isFinite(r.beta) ? r.beta : 1;
   const ok = !(r.vol > P.maxVol) && !(beta > P.maxBeta);
   const adj = t.vol * (r.z_vol || 0) + t.quality * (r.z_quality || 0) + t.consistency * (r.z_consistency || 0)
     + t.mom * (r.z_mom || 0) + t.growth * (r.z_growth || 0) + t.beta * (beta - 1);
-  return { ok, adj, score: (r.score || 0) + adj };
+  const base = UI.calScore ? UI.calScore(r) : (r.score || 0);
+  return { ok, adj, beta, score: base + adj };
 };
 
 // bars per year inferred from a date list: the target mixes daily ETFs and weekly single
@@ -244,22 +250,24 @@ UI.buildAllocation = function (capital, profileKey, nStocks, opts) {
   if (divIdx) add(divIdx, 'Equity', 'dividend / low-volatility equity', eq * eqMix.div);
   // individual leaders: top advisor names, one per sector, not rated SELL, large enough to defend
   const picks = tuned ? UI.topStockPicks(nStocks, { profile: profileKey }) : UI.topStockPicks(nStocks);
-  if (picks.length && tuned) {
-    // size the stock sleeve the way the profile says: calmer names get more (conservative), an even
-    // blend (balanced), or the strongest multi-engine calls get more (aggressive). No single stock may
-    // exceed the profile's cap; anything trimmed by the cap goes to the core index fund.
+  let sleeveInfo = null;
+  if (picks.length && tuned && UI.sizeSleeve) {
+    // size the stock sleeve on the real covariance of the picks: Hierarchical Risk Parity for a
+    // conservative plan, blended with Black-Litterman max-Sharpe (conviction as the views) as the risk
+    // level rises. No single stock may exceed the profile's cap; if every name is capped, the rest
+    // goes to the core index fund.
     const sleeve = eq * eqMix.stocks;
-    const iv = picks.map(p => 1 / Math.max(0.12, p.vol || 0.3)), ivs = Q.sum(iv);
-    const cv = picks.map(p => Math.max(0.05, p.conv || 0.1)), cvs = Q.sum(cv);
-    const raw = picks.map((p, i) => P.weighting === 'invvol' ? iv[i] / ivs
-      : P.weighting === 'conviction' ? cv[i] / cvs : 0.5 / picks.length + 0.5 * iv[i] / ivs);
-    let spill = 0;
-    picks.forEach((p, i) => {
-      let w = sleeve * raw[i];
-      if (w > P.maxName) { spill += w - P.maxName; w = P.maxName; }
-      add(p.sym, 'Equity', `single stock (${p.sector})`, w);
-    });
-    if (spill > 0 && coreIdx) { const h = holdings.find(x => x.sym === coreIdx); if (h) h.weight += spill; }
+    const sz = UI.sizeSleeve(picks, profileKey, P.maxName / Math.max(sleeve, 1e-9));
+    picks.forEach((p, i) => add(p.sym, 'Equity', `single stock (${p.sector})`, sleeve * sz.w[i]));
+    const spill = sleeve * (1 - Q.sum(sz.w));
+    if (spill > 1e-6 && coreIdx) { const h = holdings.find(x => x.sym === coreIdx); if (h) h.weight += spill; }
+    sleeveInfo = { method: sz.method, sleeveVol: sz.sleeveVol, eqVol: sz.eqVol, divRatio: sz.divRatio, maxCorr: sz.maxCorr,
+      skipped: picks.skipped || [], votes: Object.fromEntries(picks.map(p => [p.sym, { conv: p.conv, agreeFrac: p.agreeFrac, votes: p.votes }])) };
+    tilt.push(`stock sizing: ${sz.method}, stock sleeve volatility ${f.pct(sz.sleeveVol, 0)} vs ${f.pct(sz.eqVol, 0)} equal-weighted`);
+    if (sleeveInfo.skipped.length) tilt.push(`skipped for moving too much like a stock already held: ${sleeveInfo.skipped.slice(0, 4).map(x => `${x.sym} (${f.n(x.corr, 2)} with ${x.with})`).join(', ')}`);
+  } else if (picks.length && tuned) {
+    const sleeve = eq * eqMix.stocks;
+    picks.forEach(p => add(p.sym, 'Equity', `single stock (${p.sector})`, Math.min(P.maxName, sleeve / picks.length)));
   } else if (picks.length) {
     const per = eq * eqMix.stocks / picks.length;
     picks.forEach(p => add(p.sym, 'Equity', `single-stock leader (${p.sector})`, per));
@@ -308,6 +316,49 @@ UI.buildAllocation = function (capital, profileKey, nStocks, opts) {
   const invested = Q.sum(holdings.map(h => h.weight));
   const targetInvested = 1 - cash;
   if (invested > 0) holdings.forEach(h => h.weight *= targetInvested / invested);
+
+  // strategy-library timing: a fund sleeve is trimmed (up to a quarter, the rest held as cash) only
+  // when the library's VALIDATED strategies on that exact fund are out of the market today
+  const timing = [];
+  if (tuned && UI.timingVote) {
+    holdings.forEach(h => {
+      if (/^single/.test(h.role)) return;
+      const tv = UI.timingVote(h.sym);
+      if (!tv) return;
+      const k = tv.s >= 0.5 ? 1 : 0.75 + 0.5 * tv.s;
+      timing.push({ sym: h.sym, n: tv.n, s: tv.s, factor: k, ids: tv.list.map(x => x.id), asof: tv.asof });
+      h.weight *= k;
+    });
+    const trimmed = timing.filter(x => x.factor < 1);
+    if (trimmed.length) tilt.push(`validated timing strategies are out of ${trimmed.map(x => x.sym).join(', ')} today: trimmed ${trimmed.map(x => `${x.sym} ${Math.round((1 - x.factor) * 100)}%`).join(', ')} into cash`);
+    else if (timing.length) tilt.push(`validated timing strategies are long ${timing.map(x => x.sym).join(', ')}: no trims`);
+  }
+
+  // risk budget: the whole plan must fit the risk level's volatility limit and lose no more than its
+  // limit in the worst of the 2008, COVID and 2022 replays. If not, every position is scaled down
+  // together and the difference is held as cash (T-bills) until it fits.
+  let risk = null, scaledTo = 1;
+  if (tuned && UI.planRisk && P.budget) {
+    for (let it = 0; it < 5; it++) {
+      const wm = {};
+      holdings.forEach(h => wm[h.sym] = (wm[h.sym] || 0) + h.weight);
+      risk = UI.planRisk(wm);
+      if (!risk) break;
+      const sVol = risk.vol > P.budget.vol ? P.budget.vol / risk.vol : 1;
+      const sStr = risk.worst && risk.worst.ret < P.budget.stress ? P.budget.stress / risk.worst.ret : 1;
+      const k = Math.min(sVol, sStr);
+      if (k >= 0.998) break;
+      holdings.forEach(h => h.weight *= k * 0.995);
+      scaledTo *= k * 0.995;
+    }
+    if (risk) {
+      const lim = `${P.label.toLowerCase()} limits (volatility ${f.pct(P.budget.vol, 1)}, worst crisis replay ${f.pct(P.budget.stress, 0)})`;
+      const now = `volatility ${f.pct(risk.vol, 1)}, ` + (risk.worst ? `worst crisis replay ${f.pct(risk.worst.ret, 0)} in the ${risk.worst.name}`
+        : `crisis replays not enforced because most holdings had no prices then (estimated worst ${f.pct(risk.worstAny.ret, 0)})`);
+      tilt.push(scaledTo < 0.998 ? `risk budget: every position scaled to ${f.pct(scaledTo, 0)} and the rest held in cash to fit the ${lim}; now ${now}`
+        : `risk budget: inside the ${lim}; ${now}`);
+    }
+  }
 
   // --- 3. dollars, shares, and the decision-engine call for single names --------------
   let deployed = 0;
@@ -361,6 +412,7 @@ UI.buildAllocation = function (capital, profileKey, nStocks, opts) {
 
   return {
     capital, profileKey, profile: P, regime, buckets, tilt, holdings, cashDollars, tuned, nStocks,
+    brain: tuned ? { sleeve: sleeveInfo, timing, risk, scaledTo, budget: P.budget } : null,
     excluded: [...UI.excludedSet()].sort(), stockPct: Q.sum(holdings.filter(h => /^single/.test(h.role)).map(h => h.dollars)) / capital,
     cashPct: cashDollars / capital, expVol, mc, asof: AL.asof, inverted,
     ts: new Date().toISOString().slice(0, 16).replace('T', ' '), regimeLabel: regime.label,
@@ -393,6 +445,11 @@ UI.topStockPicks = function (n, opts) {
   const key = opts.profile && UI.RISK_PROFILES[opts.profile] ? opts.profile : null;
   const P = key ? UI.RISK_PROFILES[key] : null;
   const ex = UI.excludedSet();
+  // profile-driven picks are shared by the Competition Center and the Stock Advisor: cache them per
+  // risk level, stock count, can't-buy list and data date so both screens show the same names
+  const ck = key ? [key, n, [...ex].sort().join(','), AL.asof].join('|') : null;
+  UI._picksCache = UI._picksCache || {};
+  if (ck && UI._picksCache[ck]) return UI._picksCache[ck];
   // advisor-ranked shortlist of real, liquid, genuine-buy candidates; capped so the ensemble (which
   // fits an ML model per name) only runs on a bounded set. The cap is generous vs the ~5 we keep.
   // With a risk level, the shortlist is re-ranked by that level's fit and limited to names inside
@@ -410,20 +467,36 @@ UI.topStockPicks = function (n, opts) {
     try { call = UI.decision(r.sym).call; } catch (e) { }
     if (call === 'SELL') continue;            // never open a position the decision engine rejects
     let sc = null;
-    try { sc = UI.symConviction(r.sym, scored); } catch (e) { }
+    // website path: every engine's vote is weighted by its evidence (UI.brainConviction); the bot's
+    // path keeps the classic six-engine fusion unchanged
+    try { sc = key && UI.brainConviction ? UI.brainConviction(r.sym, scored) : UI.symConviction(r.sym, scored); } catch (e) { }
     const conv = sc ? sc.conviction : (r.score || 0);   // fall back to the advisor score if fusion is unavailable
     if (conv <= 0) continue;                  // the fuller picture has to be net-positive to call it a leader
-    ranked.push({ r, conv, rank: conv + (fit ? fit.adj : 0) });
+    ranked.push({ r, conv, sc, rank: conv + (fit ? fit.adj : 0) });
   }
   ranked.sort((a, b) => b.rank - a.rank);     // greatest conviction first, plus the risk level's tilt
   const out = [], perSector = {}, cap = P ? P.perSector : 1;
-  for (const { r, conv } of ranked) {
-    if (out.length >= n) break;
-    const sec = UI.canonSector(r.sector);
-    if (sec && (perSector[sec] || 0) >= cap) continue;   // sector cap (synonym-folded)
-    if (sec) perSector[sec] = (perSector[sec] || 0) + 1;
-    out.push(key ? { ...r, conv } : r);
+  const skipped = [];
+  // with a risk level, also refuse a stock that moves too much like one already picked (weekly
+  // correlation above the level's limit): two names that trade as one are one bet, not two. If that
+  // leaves the list short, a second pass fills it without the correlation rule so the count holds.
+  for (const pass of key ? [1, 2] : [1]) {
+    for (const { r, conv, sc } of ranked) {
+      if (out.length >= n) break;
+      if (out.some(o => o.sym === r.sym)) continue;
+      const sec = UI.canonSector(r.sector);
+      if (sec && (perSector[sec] || 0) >= cap) continue;   // sector cap (synonym-folded)
+      if (key && pass === 1 && UI.pairCorr) {
+        let worst = null;
+        for (const o of out) { const c = UI.pairCorr(o.sym, r.sym); if (c != null && (!worst || c > worst.c)) worst = { c, with: o.sym }; }
+        if (worst && worst.c > P.maxCorr) { skipped.push({ sym: r.sym, with: worst.with, corr: worst.c }); continue; }
+      }
+      if (sec) perSector[sec] = (perSector[sec] || 0) + 1;
+      out.push(key ? { ...r, conv, agreeFrac: sc && sc.nEngines ? sc.agree / sc.nEngines : null,
+        votes: sc && sc.votes ? sc.votes.map(v => ({ engine: v.engine, v: +v.v.toFixed(2), w: +v.w.toFixed(2), evidence: v.evidence, why: v.why })) : null } : r);
+    }
   }
+  if (key) { out.skipped = skipped.filter(x => !out.some(o => o.sym === x.sym)); UI._picksCache[ck] = out; }
   return out;
 };
 
@@ -752,7 +825,8 @@ UI.def('command', 'Competition Center', '◎', 'Start Here', function (el, state
     const why = !target ? '' : target.asof !== AL.asof ? `new market data (${AL.asof})`
       : target.profileKey !== UI.riskProfile() ? `risk level changed to ${UI.RISK_PROFILES[UI.riskProfile()].label}`
       : String(target.excluded || []) !== String([...UI.excludedSet()].sort()) ? 'your can\'t-buy list changed'
-      : !target.tuned ? 'the upgraded stock picker' : null;
+      : !target.tuned ? 'the upgraded stock picker'
+      : !target.brain && UI.brainPanel ? 'the quant brain upgrade' : null;
     if (!target || why) {
       target = UI.buildAllocation(target ? target.capital : capital, UI.riskProfile());
       AL.store.set('command_target', target);
@@ -772,20 +846,21 @@ UI.def('command', 'Competition Center', '◎', 'Start Here', function (el, state
         <div class="tile"><div class="t-label">Cash held</div><div class="t-value">${f.usd(t.cashDollars)}</div><div class="t-delta note">${f.pct(t.cashPct, 0)} dry powder</div></div>
         <div class="tile"><div class="t-label">Positions</div><div class="t-value">${t.holdings.filter(h => h.shares > 0).length}</div><div class="t-delta note">${t.holdings.filter(h => h.shares > 0 && /^single/.test(h.role)).length} stocks · ${t.holdings.filter(h => h.shares > 0 && !/^single/.test(h.role)).length} funds</div></div>
         <div class="tile"><div class="t-label">In individual stocks</div><div class="t-value">${f.pct(t.stockPct || 0, 0)}</div><div class="t-delta note">of the whole plan</div></div>
-        <div class="tile"><div class="t-label">Est. annual volatility</div><div class="t-value">${t.expVol != null ? f.pct(t.expVol, 0) : '-'}</div><div class="t-delta note">target ~${f.pct(rp.vt, 0)}</div></div>
+        <div class="tile"><div class="t-label">Est. annual volatility</div><div class="t-value">${t.brain && t.brain.risk ? f.pct(t.brain.risk.vol, 1) : t.expVol != null ? f.pct(t.expVol, 0) : '-'}</div><div class="t-delta note">${t.brain && t.brain.risk ? `10y replay, budget ${f.pct(t.brain.budget.vol, 1)}` : `target ~${f.pct(rp.vt, 0)}`}</div></div>
         ${t.mc ? `<div class="tile"><div class="t-label">1y vs cash (2k sims)</div><div class="t-value ${t.mc.median >= 0 ? 'up' : 'dn'}">${f.spct(t.mc.median)}</div><div class="t-delta note">worst 5%: ${f.spct(t.mc.p05)} · P(loss) ${f.pct(t.mc.pLoss, 0)}</div></div>` : ''}
       </div>
       <div class="note" style="margin-bottom:12px">Why this mix: ${t.tilt.join('; ')}.</div>
       <div class="grid g23">
-        <div style="min-width:0">${UI.panel('Your target portfolio', `<table class="tbl"><thead><tr><th>Ticker</th><th>What it is</th><th>Bucket</th><th class="r">Target %</th><th class="r">$ Amount</th><th class="r">Buy</th><th class="r">Price</th><th class="r">Call</th><th></th></tr></thead><tbody>` +
+        <div style="min-width:0">${UI.panel('Your target portfolio', `<table class="tbl"><thead><tr><th>Ticker</th><th>What it is</th><th>Bucket</th><th class="r">Target %</th><th class="r">$ Amount</th><th class="r">Buy</th><th class="r">Price</th><th class="r">Call</th>${t.brain ? '<th class="r">Engines agree</th>' : ''}<th></th></tr></thead><tbody>` +
           t.holdings.filter(h => h.shares > 0).map(h => `<tr>
             <td class="sym">${h.sym}</td><td class="t">${f.esc(h.role)}</td><td class="t" style="font-size:10px;color:var(--muted)">${h.bucket}</td>
             <td class="r">${f.pct(h.dollars / t.capital, 1)}</td><td class="r">${f.usd(h.dollars)}</td>
             <td class="r"><b>${h.cls === 'Crypto' ? h.shares : h.shares + ' sh'}</b></td><td class="r">${f.px(h.price)}</td>
             <td class="r">${UI.callBadge(h.call, h.callKind)}</td>
+            ${t.brain ? `<td class="r">${/^single/.test(h.role) && UI.engineAgreeCell ? UI.engineAgreeCell(t.brain.sleeve && t.brain.sleeve.votes[h.sym]) : '<span class="note">-</span>'}</td>` : ''}
             <td class="r"><button class="btn small" data-cantbuy="${h.sym}" title="Not available where you trade? Remove it and the next best pick takes its place">Can't buy</button></td></tr>`).join('') +
-          `<tr style="border-top:2px solid var(--line)"><td class="sym">CASH</td><td class="t">uninvested, held as dry powder</td><td></td><td class="r">${f.pct(t.cashPct, 1)}</td><td class="r">${f.usd(t.cashDollars)}</td><td class="r">-</td><td class="r">-</td><td class="r">-</td><td></td></tr>` +
-          '</tbody></table><div class="note" style="padding:8px 12px 2px">Call = the Buy / Sell / Hold Decision engine verdict for single stocks. Funds, bonds, gold and crypto instead show a price-trend read (Uptrend / Downtrend / Flat), since they have no company fundamentals to score. Can\'t buy removes a ticker you are not allowed to trade, everywhere in AlphaLab, and the plan rebuilds with the next best candidate.</div>' +
+          `<tr style="border-top:2px solid var(--line)"><td class="sym">CASH</td><td class="t">uninvested, held as dry powder</td><td></td><td class="r">${f.pct(t.cashPct, 1)}</td><td class="r">${f.usd(t.cashDollars)}</td><td class="r">-</td><td class="r">-</td><td class="r">-</td>${t.brain ? '<td></td>' : ''}<td></td></tr>` +
+          '</tbody></table><div class="note" style="padding:8px 12px 2px">Call = the Buy / Sell / Hold Decision engine verdict for single stocks. Funds, bonds, gold and crypto instead show a price-trend read (Uptrend / Downtrend / Flat), since they have no company fundamentals to score. Engines agree = how many of the engines that voted on a stock point the same way (hover for each vote and its weight). Can\'t buy removes a ticker you are not allowed to trade, everywhere in AlphaLab, and the plan rebuilds with the next best candidate.</div>' +
           `<div class="controls" style="padding:6px 12px 10px;flex-wrap:wrap">
             <label class="lbl">can't buy</label>
             ${(t.excluded || []).length ? t.excluded.map(x => `<span class="chip" data-canbuy="${x}" title="Click to allow ${x} again">${x} &times;</span>`).join('') : '<span class="note">nothing removed</span>'}
@@ -799,10 +874,12 @@ UI.def('command', 'Competition Center', '◎', 'Start Here', function (el, state
             <button class="btn" id="cc-report" style="width:100%">Write the strategy report</button>`)}
         </div>
       </div>
+      ${UI.brainPanel ? `<div style="margin-top:12px">${UI.brainPanel(t)}</div>` : ''}
       <div class="warn-box" style="margin-top:12px">This is research on real historical data, not a guarantee or personalized financial advice. No tool can guarantee a competition win. The 1-year projection block-bootstraps real return history but is deliberately centered on the risk-free rate, not the past decade's unusually strong returns, so it shows this book's risk above cash rather than a promised gain, and a real chance of loss. AlphaLab never places trades, you do, and you can change any position. Verify contest rules before trading (some cap asset types, shorting or leverage).</div>`;
     C.bars(document.getElementById('cc-buckets'), bucketRows, { horizontal: true, pct: true, sorted: true });
     document.getElementById('cc-apply').addEventListener('click', () => applyPlan(t));
     document.getElementById('cc-report').addEventListener('click', () => writeReport(t));
+    if (UI.bindBrainPanel) UI.bindBrainPanel(body, () => { AL.store.set('command_target', UI.buildAllocation(t.capital, t.profileKey)); render(); });
     body.querySelectorAll('[data-cantbuy]').forEach(b => b.addEventListener('click', () => removeAndReplace(t, b.dataset.cantbuy)));
     body.querySelectorAll('[data-canbuy]').forEach(c => c.addEventListener('click', () => { UI.restoreSym(c.dataset.canbuy); render(); }));
     const exin = document.getElementById('cc-exin');
