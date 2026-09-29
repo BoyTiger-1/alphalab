@@ -856,7 +856,7 @@ DESK.ips = function (body) {
       ${fld('cashMin', 'Minimum cash (%)', num('cashMin'))}
       ${fld('esg', 'Exclusions (tickers or sectors)', txt('esg', 'e.g. Energy, TSLA'))}
       <label class="ips-f" style="grid-column:1/-1"><span>Other constraints and notes</span><textarea class="inp" data-k="notes" rows="3">${AL.fmt.esc(ips.notes)}</textarea></label>
-    </div><div class="controls" style="margin-top:10px"><button class="btn primary" id="ips-save">Save IPS</button><span class="note">Saved in this browser only.</span></div>`)}
+    </div><div class="controls" style="margin-top:10px"><button class="btn primary" id="ips-save">Save IPS</button><span class="note">Saved in this browser only. Saving also sets the risk level for Competition Center and Stock Advisor (1-2 Conservative, 3 Balanced, 4-5 Aggressive), and tickers or sectors in Exclusions are skipped by every recommender.</span></div>`)}
     ${UI.panel('Your IPS, written out', '<div id="ips-doc" class="ips-doc"></div>')}</div>`;
   const read = () => { body.querySelectorAll('[data-k]').forEach(i => { const k = i.dataset.k; ips[k] = i.type === 'number' || k === 'risk' ? +i.value : i.value; }); return ips; };
   const paint = () => {
@@ -871,7 +871,16 @@ DESK.ips = function (body) {
       <p><b>Process.</b> Ideas are tested on real market history with walk-forward validation, costs and overfitting checks before capital is committed. Every trade is logged with a thesis and an exit rule, and the book is rebalanced when it drifts outside these bands.</p>`;
   };
   body.querySelectorAll('[data-k]').forEach(i => i.addEventListener('input', paint));
-  $('ips-save').addEventListener('click', () => { AL.store.set('comp_ips', read()); toast('IPS saved', 'ok'); });
+  $('ips-save').addEventListener('click', () => {
+    const p = read();
+    AL.store.set('comp_ips', p);
+    AL.bus.emit('exclusions:changed');          // IPS exclusions feed every recommender
+    // the client's risk tolerance drives the app-wide risk level used by Competition Center and Stock Advisor
+    const prof = p.risk <= 2 ? 'conservative' : p.risk >= 4 ? 'aggressive' : 'balanced';
+    const changed = UI.setRiskProfile && UI.riskProfile() !== prof;
+    if (changed) UI.setRiskProfile(prof);
+    toast(changed ? `IPS saved. Risk level set to ${UI.RISK_PROFILES[prof].label} across AlphaLab.` : 'IPS saved', 'ok');
+  });
   paint();
 };
 DESK.score = function (body) {

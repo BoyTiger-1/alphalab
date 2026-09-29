@@ -197,47 +197,66 @@ UI.def('advisor', 'Stock Advisor', '✦', 'Advisory', function (el, state, tab) 
   };
   const render = (res) => {
     const f = AL.fmt;
-    const { rows, regime } = res;
+    const { regime } = res;
+    // rank by fit with the app-wide risk level (same setting as the Competition Center), and drop
+    // anything marked "can't buy" so the next name in line moves up everywhere
+    const key = UI.riskProfile(), P = UI.RISK_PROFILES[key], ex = UI.excludedSet();
+    const fitOf = new Map(res.rows.map(r => [r.sym, UI.profileFit(r, key)]));
+    const fitOnly = state.fitOnly !== false;
+    const rows = res.rows.filter(r => !ex.has(r.sym) && (!fitOnly || fitOf.get(r.sym).ok))
+      .sort((a, b) => fitOf.get(b.sym).score - fitOf.get(a.sym).score);
     const sectors = ['All', ...[...new Set(rows.map(r => r.sector))].sort()];
     const secFilter = state.sec || 'All';
     const q = (state.q || '').toUpperCase();
     const visible = rows.filter(r => (secFilter === 'All' || r.sector === secFilter) &&
       (!q || r.sym.includes(q) || r.name.toUpperCase().includes(q)));
     const shown = visible.slice(0, 250);
-    // starter basket: walk the ranking, max 2 names per sector, 10 picks, inverse-vol weights
+    // starter basket for this risk level: its stock count, sector cap and weighting, companies only
     const top = [];
     const perSec = {};
+    const sp = AL.sp500();
     for (const r of rows) {
-      if (top.length >= 10) break;
-      if ((perSec[r.sector] || 0) >= 2) continue;
-      perSec[r.sector] = (perSec[r.sector] || 0) + 1;
+      if (top.length >= P.nStocks) break;
+      if (!fitOf.get(r.sym).ok || !UI.isOperatingCo(r) || UI.sectorExcluded(r.sector)) continue;
+      if (P.spOnly && !(sp && sp.cols[r.sym])) continue;
+      const sec = UI.canonSector(r.sector) || r.sector;
+      if ((perSec[sec] || 0) >= P.perSector) continue;
+      perSec[sec] = (perSec[sec] || 0) + 1;
       top.push(r);
     }
-    const iv = top.map(r => 1 / (r.vol || 0.2));
-    const tot = Q.sum(iv);
-    top.forEach((r, i) => r.sugW = Math.min(iv[i] / tot, 0.15));
-    const wTot = Q.sum(top.map(r => r.sugW));
-    top.forEach(r => r.sugW /= wTot);
+    const iv = top.map(r => 1 / Math.max(0.12, r.vol || 0.2)), ivs = Q.sum(iv) || 1;
+    const cv = top.map(r => Math.max(0.05, fitOf.get(r.sym).score)), cvs = Q.sum(cv) || 1;
+    const sugW = {};
+    top.forEach((r, i) => sugW[r.sym] = Math.min(0.15, P.weighting === 'invvol' ? iv[i] / ivs
+      : P.weighting === 'conviction' ? cv[i] / cvs : 0.5 / top.length + 0.5 * iv[i] / ivs));
+    const wTot = Q.sum(Object.values(sugW)) || 1;
+    top.forEach(r => sugW[r.sym] /= wTot);
     document.getElementById('ad-body').innerHTML = `
       <div class="note" style="margin-bottom:8px"><b>${res.universe.toLocaleString()}</b> stocks scored. Regime: <b>${regime.label}</b>. ${regime.pCalm > 0.5 ? 'Risk-on tape, momentum and beta get a small boost.' : 'Stressed tape, the model favors low-beta defensive names.'}</div>
+      <div class="controls" style="margin-bottom:6px"><label class="lbl">risk level</label>
+        ${Object.entries(UI.RISK_PROFILES).map(([k, p]) => `<span class="chip ${k === key ? 'on' : ''}" data-prof="${k}" title="${f.esc(p.blurb)}">${p.label}</span>`).join('')}
+        <span class="chip ${fitOnly ? 'on' : ''}" id="ad-fit" title="Hide stocks above this risk level's volatility (${f.pct(P.maxVol, 0)}) or beta (${P.maxBeta}) limit">only names that fit</span>
+        <span class="note">${P.label}: favors ${f.esc(P.stockStyle)}. Shared with the Competition Center.</span></div>
       <div class="controls"><input class="inp" id="ad-q" placeholder="search ticker or name" value="${f.esc(state.q || '')}" style="width:180px">
         <select class="inp" id="ad-sec">${sectors.map(s => `<option ${s === secFilter ? 'selected' : ''}>${f.esc(s)}</option>`).join('')}</select>
         <span class="note">showing ${shown.length} of ${visible.length} matches</span></div>
       <div class="grid g23">
         <div class="panel"><div class="panel-body nopad" style="max-height:calc(100vh - 340px);overflow:auto">
-          <table class="tbl" id="ad-tbl"><thead><tr><th>#</th><th>Stock</th><th>Sector</th><th class="r">Score</th><th class="r">Mom 6M</th><th class="r">Trend</th><th class="r">Sharpe 1Y</th><th class="r">Vol</th><th class="r">Sent</th><th class="r">Conf</th></tr></thead><tbody>
+          <table class="tbl" id="ad-tbl"><thead><tr><th>#</th><th>Stock</th><th>Sector</th><th class="r">Score</th><th class="r" title="Score adjusted for your risk level; the table is sorted by this">Fit</th><th class="r">Mom 6M</th><th class="r">Trend</th><th class="r">Sharpe 1Y</th><th class="r">Vol</th><th class="r">Sent</th><th class="r">Conf</th></tr></thead><tbody>
           ${shown.map(r => `<tr data-sym="${r.sym}"><td>${rows.indexOf(r) + 1}</td><td class="t"><span class="sym">${r.sym}</span> ${f.esc(r.name.slice(0, 18))}</td>
             <td class="t" style="font-size:10px">${f.esc((r.sector || '').slice(0, 14))}</td>
             <td class="r"><b class="${f.cls(r.score)}">${f.n(r.score)}</b></td>
+            <td class="r ${f.cls(fitOf.get(r.sym).score)}">${f.n(fitOf.get(r.sym).score)}</td>
             <td class="r ${f.cls(r.mom)}">${f.spct(r.mom, 0)}</td><td class="r ${f.cls(r.trend)}">${f.spct(r.trend, 0)}</td>
             <td class="r">${f.n(r.sharpe, 1)}</td><td class="r">${f.pct(r.vol, 0)}</td>
             <td class="r ${r.hasSent ? f.cls(r.z_sent) : ''}">${r.hasSent ? f.n(r.z_sent, 1) : '·'}</td>
             <td class="r">${f.pct(r.conf, 0)}</td></tr>`).join('')}
           </tbody></table></div></div>
         <div style="display:flex;flex-direction:column;gap:12px;min-width:0">
-          <div class="panel"><div class="panel-head">Starter basket (top 10, max 2 per sector, inverse-vol)</div><div class="panel-body">
-            ${top.map(r => `<div class="kv"><span class="k"><span class="sym">${r.sym}</span> ${f.esc(r.name.slice(0, 16))} <span style="color:var(--muted);font-size:10px">${f.esc((r.sector || '').slice(0, 12))}</span></span><span class="v">${f.pct(r.sugW, 1)}</span></div>`).join('')}
-            <div class="note" style="margin-top:8px">Sector cap keeps the basket diversified; weights cap any single name near 15%. Enter these in My Holdings with your budget, then stress test in Risk Lab.</div></div></div>
+          <div class="panel"><div class="panel-head">Starter basket (${P.label.toLowerCase()}: ${P.nStocks} stocks, max ${P.perSector} per sector, ${P.weighting === 'invvol' ? 'calmer names weighted up' : P.weighting === 'conviction' ? 'strongest scores weighted up' : 'even blend'})</div><div class="panel-body">
+            ${top.map(r => `<div class="kv"><span class="k"><span class="sym">${r.sym}</span> ${f.esc(r.name.slice(0, 16))} <span style="color:var(--muted);font-size:10px">${f.esc((r.sector || '').slice(0, 12))}</span></span><span class="v">${f.pct(sugW[r.sym], 1)} <span class="x" data-cantbuy="${r.sym}" title="Can't buy ${r.sym} where you trade? Remove it and the next best stock takes its place" style="cursor:pointer;color:var(--muted);margin-left:6px">&times;</span></span></div>`).join('')}
+            ${ex.size ? `<div class="controls" style="margin-top:8px;flex-wrap:wrap"><label class="lbl">can't buy</label>${[...ex].map(x => `<span class="chip" data-canbuy="${x}" title="Click to allow ${x} again">${x} &times;</span>`).join('')}</div>` : ''}
+            <div class="note" style="margin-top:8px">Press &times; on a stock you cannot buy where you trade: it is removed everywhere in AlphaLab and the next best stock fills the slot. Sector cap keeps the basket diversified; no single name above 15%. Enter these in My Holdings with your budget, then stress test in Risk Lab.</div></div></div>
           <div class="panel"><div class="panel-head">Pick detail</div><div class="panel-body" id="ad-detail"><div class="empty">Click any stock for the full reasoning.</div></div></div>
         </div>
       </div>`;
@@ -245,7 +264,15 @@ UI.def('advisor', 'Stock Advisor', '✦', 'Advisory', function (el, state, tab) 
     document.querySelectorAll('#ad-tbl tr[data-sym]').forEach(tr => tr.addEventListener('click', () => detail(bySym[tr.dataset.sym], regime)));
     document.getElementById('ad-q').addEventListener('input', AL.debounce(e => { state.q = e.target.value; render(res); }, 300));
     document.getElementById('ad-sec').addEventListener('change', e => { state.sec = e.target.value; render(res); });
-    detail(rows[0], regime);
+    const body = document.getElementById('ad-body');
+    body.querySelectorAll('.chip[data-prof]').forEach(c => c.addEventListener('click', () => { UI.setRiskProfile(c.dataset.prof); render(res); }));
+    document.getElementById('ad-fit').addEventListener('click', () => { state.fitOnly = !fitOnly; render(res); });
+    body.querySelectorAll('[data-cantbuy]').forEach(x => x.addEventListener('click', () => {
+      UI.excludeSym(x.dataset.cantbuy); render(res);
+      if (UI.toast) UI.toast(`Removed ${x.dataset.cantbuy}. The next best stock took its place.`, 'ok');
+    }));
+    body.querySelectorAll('[data-canbuy]').forEach(c => c.addEventListener('click', () => { UI.restoreSym(c.dataset.canbuy); render(res); }));
+    if (rows.length) detail(rows[0], regime);
   };
   const detail = (r, regime) => {
     const f = AL.fmt;

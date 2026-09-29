@@ -8,14 +8,106 @@
 
 // pick the first instrument in a preference list that actually exists in this build, so a
 // plan still works before newly added ETFs have been downloaded (EFA<-VEA, EEM<-VWO, SHY<-BIL)
-UI.pickSym = list => list.find(s => AL.getSeries(s));
+// Anything the user marked "can't buy here" is skipped, so the next fund in the list steps in.
+UI.pickSym = list => list.find(s => AL.getSeries(s) && !UI.isExcluded(s));
 
 // strategic bucket weights per risk profile: equity / bonds / real assets / crypto / cash,
-// plus a rough annualized vol target used only for the expected-risk readout
+// plus a rough annualized vol target used only for the expected-risk readout. The stock-side
+// fields make the risk level reach inside the equity bucket too, not just the bucket sizes:
+//   stockShare  share of the equity bucket held as individual stocks (the rest in index funds)
+//   nStocks     how many individual stocks the plan holds
+//   maxVol      highest annualized volatility a stock may have to be picked
+//   maxBeta     highest market beta a stock may have to be picked
+//   perSector   most stocks allowed from one sector
+//   maxName     largest single stock, as a share of the whole plan
+//   weighting   invvol (calmer names get more), blend, or conviction (strongest calls get more)
+//   spOnly      only S&P 500 members (established large companies)
+//   tilt        extra factor weights added to the advisor score when ranking stocks for this profile
 UI.RISK_PROFILES = {
-  conservative: { label: 'Conservative', blurb: 'capital preservation first', eq: 0.35, bond: 0.45, real: 0.12, crypto: 0.01, cash: 0.07, vt: 0.07 },
-  balanced: { label: 'Balanced', blurb: 'growth with a real safety sleeve', eq: 0.55, bond: 0.25, real: 0.12, crypto: 0.03, cash: 0.05, vt: 0.10 },
-  aggressive: { label: 'Aggressive', blurb: 'maximize growth, accept bigger swings', eq: 0.72, bond: 0.08, real: 0.12, crypto: 0.06, cash: 0.02, vt: 0.14 },
+  conservative: { label: 'Conservative', blurb: 'capital preservation first', eq: 0.35, bond: 0.45, real: 0.12, crypto: 0.01, cash: 0.07, vt: 0.07,
+    stockShare: 0.45, nStocks: 8, maxVol: 0.35, maxBeta: 1.1, perSector: 2, maxName: 0.05, weighting: 'invvol', spOnly: true,
+    tilt: { vol: 0.20, quality: 0.10, consistency: 0.08, mom: 0, growth: 0, beta: -0.25 },
+    stockStyle: 'calm, lower-beta, high-quality companies' },
+  balanced: { label: 'Balanced', blurb: 'growth with a real safety sleeve', eq: 0.55, bond: 0.25, real: 0.12, crypto: 0.03, cash: 0.05, vt: 0.10,
+    stockShare: 0.60, nStocks: 10, maxVol: 0.60, maxBeta: 1.6, perSector: 2, maxName: 0.07, weighting: 'blend',
+    tilt: { vol: 0.03, quality: 0.03, consistency: 0, mom: 0.03, growth: 0.03, beta: 0 },
+    stockStyle: 'the strongest all-round names, any style' },
+  aggressive: { label: 'Aggressive', blurb: 'maximize growth, accept bigger swings', eq: 0.72, bond: 0.08, real: 0.12, crypto: 0.06, cash: 0.02, vt: 0.18,
+    stockShare: 0.82, nStocks: 12, maxVol: 0.95, maxBeta: 3, perSector: 3, maxName: 0.09, weighting: 'conviction',
+    tilt: { vol: -0.08, quality: 0, consistency: 0, mom: 0.15, growth: 0.12, beta: 0.12 },
+    stockStyle: 'high-momentum, high-growth, higher-beta names' },
+};
+
+// One risk level for the whole app: Competition Center, Stock Advisor, the daily briefing and the
+// Competition Desk IPS all read and write the same setting, so changing it in one place changes it
+// everywhere. Listeners hear 'profile:changed' and re-render.
+UI.riskProfile = function () {
+  const k = (AL.store.get('command_cfg', {}) || {}).profile;
+  return UI.RISK_PROFILES[k] ? k : 'balanced';
+};
+UI.setRiskProfile = function (k) {
+  if (!UI.RISK_PROFILES[k]) return;
+  const cfg = AL.store.get('command_cfg', { capital: 100000 }) || {};
+  if (cfg.profile === k) return;
+  AL.store.set('command_cfg', { ...cfg, profile: k });
+  AL.bus.emit('profile:changed', k);
+};
+
+// Tickers you cannot buy (not on your contest's approved list, not offered by your broker). They
+// are skipped by every recommender, and the next best candidate automatically takes the slot. The
+// Competition Desk IPS exclusions count too: a ticker listed there is excluded, and a sector name
+// listed there removes that whole sector from stock picks.
+UI._ipsExclusions = function () {
+  const esg = ((AL.store.get('comp_ips', {}) || {}).esg || '').trim();
+  const syms = [], sectors = [];
+  esg.split(/[,;\n]+/).map(x => x.trim()).filter(Boolean).forEach(tok => {
+    const up = tok.toUpperCase();
+    if (!/\s/.test(tok) && (AL.getSeries(up) || (UI._scoreCache && UI._scoreCache.bySym[up]))) syms.push(up);
+    else sectors.push(tok.toLowerCase());
+  });
+  return { syms, sectors };
+};
+UI.excludedList = () => (AL.store.get('excluded_syms', []) || []).slice().sort();
+UI.excludedSet = function () {
+  return new Set([...UI.excludedList(), ...UI._ipsExclusions().syms]);
+};
+UI.isExcluded = sym => UI.excludedSet().has(sym);
+UI.sectorExcluded = function (sector) {
+  const s = String(sector || '').toLowerCase(), c = String(UI.canonSector(sector) || '').toLowerCase();
+  return !!s && UI._ipsExclusions().sectors.some(x => s.includes(x) || (c && c.includes(x)));
+};
+UI.excludeSym = function (sym) {
+  sym = String(sym || '').trim().toUpperCase(); if (!sym) return;
+  const l = UI.excludedList(); if (l.includes(sym)) return;
+  l.push(sym); AL.store.set('excluded_syms', l.sort());
+  AL.bus.emit('exclusions:changed', sym);
+};
+UI.restoreSym = function (sym) {
+  const l = UI.excludedList().filter(x => x !== sym);
+  AL.store.set('excluded_syms', l);
+  AL.bus.emit('exclusions:changed', sym);
+};
+
+// Funds, trusts, notes and preferred shares sit in the total-market list as "equities", but they are
+// not operating companies. Keep them out of the single-stock picks so the stock sleeve really holds
+// companies. S&P 500 members are always companies, so they pass without the name check.
+UI.isOperatingCo = function (r) {
+  const sp = AL.sp500();
+  if (sp && sp.cols[r.sym]) return true;
+  const nm = r.name || '';
+  return !/\b(fund|trust|etf|etn|notes?|preferred|depositary|debentures?|municipal|income shares|warrants?|units?)\b/i.test(nm)
+    && !/\d%/.test(nm);                                   // "6.20%" in the name marks a note or preferred, not common stock
+};
+
+// How well one advisor row fits a risk level. ok = inside the profile's volatility and beta limits;
+// adj = the profile's extra factor tilt; score = advisor score + adj, used to rank candidates.
+UI.profileFit = function (r, key) {
+  const P = UI.RISK_PROFILES[key] || UI.RISK_PROFILES.balanced, t = P.tilt;
+  const beta = isFinite(r.beta) ? r.beta : 1;
+  const ok = !(r.vol > P.maxVol) && !(beta > P.maxBeta);
+  const adj = t.vol * (r.z_vol || 0) + t.quality * (r.z_quality || 0) + t.consistency * (r.z_consistency || 0)
+    + t.mom * (r.z_mom || 0) + t.growth * (r.z_growth || 0) + t.beta * (beta - 1);
+  return { ok, adj, score: (r.score || 0) + adj };
 };
 
 // bars per year inferred from a date list: the target mixes daily ETFs and weekly single
@@ -85,9 +177,14 @@ UI.callBadge = function (call, kind) {
 UI.buildAllocation = function (capital, profileKey, nStocks, opts) {
   const f = AL.fmt;
   const regime = Q.marketRegime();
-  const P = UI.RISK_PROFILES[profileKey] || UI.RISK_PROFILES.balanced;
-  nStocks = nStocks || 5;
+  if (!UI.RISK_PROFILES[profileKey]) profileKey = 'balanced';
+  const P = UI.RISK_PROFILES[profileKey];
   opts = opts || {};
+  // A caller that sets its own stock share (the trading bot) keeps the original fixed recipe. The
+  // website uses the profile-driven one, where the risk level also sets how many individual stocks
+  // the plan holds, which kind, how big each is, and how much of the equity bucket they take.
+  const tuned = !(opts.stockShare > 0);
+  nStocks = nStocks || (tuned ? P.nStocks : 5);
   const inverted = regime.curve != null && regime.curve < 0;   // recession-warning yield curve
 
   // --- 1. bucket weights, tilted by the detected regime -------------------------------
@@ -116,9 +213,12 @@ UI.buildAllocation = function (capital, profileKey, nStocks, opts) {
 
   // 2a. equities: core index + hand-picked leaders + growth + international + dividend
   // regime shifts the intra-equity mix toward dividends/min-vol when defensive
-  const eqMix = defensive
+  // a conservative plan always uses the defensive fund mix, and an aggressive one skips the
+  // dividend / low-volatility fund, so the index side of the equity bucket follows the risk level too
+  const eqMix = (defensive || (tuned && profileKey === 'conservative'))
     ? { core: 0.34, stocks: 0.14, growth: 0.08, intl: 0.16, em: 0.08, div: 0.20 }
-    : { core: 0.30, stocks: 0.24, growth: 0.16, intl: 0.16, em: 0.10, div: 0.04 };
+    : { core: 0.30, stocks: 0.24, growth: 0.16, intl: 0.16, em: 0.10, div: tuned && profileKey === 'aggressive' ? 0 : 0.04 };
+  if (tuned) opts = { ...opts, stockShare: P.stockShare * (defensive ? 0.8 : 1) };   // stressed tape: a bit more index, less single-name risk
   // Optional caller lever (the bot uses this): push single-stock conviction to a bigger share of the
   // equity bucket, shrinking the index sub-sleeves proportionally to make room, so the book leans into
   // real stock picks instead of sitting mostly in index ETFs. The bond and real-asset HEDGE sleeves are
@@ -132,19 +232,35 @@ UI.buildAllocation = function (capital, profileKey, nStocks, opts) {
     restKeys.forEach(k => { eqMix[k] *= scale; });
     eqMix.stocks = want;
   }
-  const coreIdx = UI.pickSym(['SPY', 'VTI']);
-  const growthIdx = UI.pickSym(['QQQ']);
+  const coreIdx = UI.pickSym(['SPY', 'VTI', 'DIA']);
+  const growthIdx = UI.pickSym(['QQQ', 'VUG', 'XLK']);
   const intlIdx = UI.pickSym(['VEA', 'EFA']);
   const emIdx = UI.pickSym(['VWO', 'EEM']);
-  const divIdx = UI.pickSym(['SCHD', 'USMV', 'QUAL']);
+  const divIdx = UI.pickSym(['SCHD', 'USMV', 'QUAL', 'VTV']);
   if (coreIdx) add(coreIdx, 'Equity', 'core US market index', eq * eqMix.core);
   if (growthIdx) add(growthIdx, 'Equity', 'US large-cap growth', eq * eqMix.growth);
   if (intlIdx) add(intlIdx, 'Equity', 'international developed markets', eq * eqMix.intl);
   if (emIdx) add(emIdx, 'Equity', 'emerging markets', eq * eqMix.em);
   if (divIdx) add(divIdx, 'Equity', 'dividend / low-volatility equity', eq * eqMix.div);
   // individual leaders: top advisor names, one per sector, not rated SELL, large enough to defend
-  const picks = UI.topStockPicks(nStocks);
-  if (picks.length) {
+  const picks = tuned ? UI.topStockPicks(nStocks, { profile: profileKey }) : UI.topStockPicks(nStocks);
+  if (picks.length && tuned) {
+    // size the stock sleeve the way the profile says: calmer names get more (conservative), an even
+    // blend (balanced), or the strongest multi-engine calls get more (aggressive). No single stock may
+    // exceed the profile's cap; anything trimmed by the cap goes to the core index fund.
+    const sleeve = eq * eqMix.stocks;
+    const iv = picks.map(p => 1 / Math.max(0.12, p.vol || 0.3)), ivs = Q.sum(iv);
+    const cv = picks.map(p => Math.max(0.05, p.conv || 0.1)), cvs = Q.sum(cv);
+    const raw = picks.map((p, i) => P.weighting === 'invvol' ? iv[i] / ivs
+      : P.weighting === 'conviction' ? cv[i] / cvs : 0.5 / picks.length + 0.5 * iv[i] / ivs);
+    let spill = 0;
+    picks.forEach((p, i) => {
+      let w = sleeve * raw[i];
+      if (w > P.maxName) { spill += w - P.maxName; w = P.maxName; }
+      add(p.sym, 'Equity', `single stock (${p.sector})`, w);
+    });
+    if (spill > 0 && coreIdx) { const h = holdings.find(x => x.sym === coreIdx); if (h) h.weight += spill; }
+  } else if (picks.length) {
     const per = eq * eqMix.stocks / picks.length;
     picks.forEach(p => add(p.sym, 'Equity', `single-stock leader (${p.sector})`, per));
   } else if (coreIdx) {
@@ -152,6 +268,7 @@ UI.buildAllocation = function (capital, profileKey, nStocks, opts) {
     const h = holdings.find(x => x.sym === coreIdx);
     if (h) h.weight += eq * eqMix.stocks;
   }
+  if (tuned) tilt.push(`${P.label.toLowerCase()} risk level: ${picks.length} individual stocks picked for ${P.stockStyle}, about ${Math.round(eqMix.stocks * 100)}% of the equity bucket`);
 
   // 2b. bonds: duration + credit, tilted to long Treasuries when defensive / inverted
   const bMix = (defensive || inverted)
@@ -159,7 +276,7 @@ UI.buildAllocation = function (capital, profileKey, nStocks, opts) {
     : { tlt: 0.24, ief: 0.28, lqd: 0.22, emb: 0.12, tip: 0.14 };
   add(UI.pickSym(['TLT']), 'Bonds', 'long-term US Treasuries', bond * bMix.tlt);
   add(UI.pickSym(['IEF', 'BND']), 'Bonds', 'intermediate US Treasuries', bond * bMix.ief);
-  add(UI.pickSym(['LQD']), 'Bonds', 'investment-grade corporates', bond * bMix.lqd);
+  add(UI.pickSym(['LQD', 'BND']), 'Bonds', 'investment-grade corporates', bond * bMix.lqd);
   add(UI.pickSym(['EMB']), 'Bonds', 'emerging-market sovereign bonds', bond * bMix.emb);
   add(UI.pickSym(['TIP']), 'Bonds', 'inflation-protected Treasuries', bond * bMix.tip);
 
@@ -172,6 +289,19 @@ UI.buildAllocation = function (capital, profileKey, nStocks, opts) {
   // 2d. crypto sleeve
   add(UI.pickSym(['BTC-USD']), 'Crypto', 'bitcoin', crypto * 0.70);
   add(UI.pickSym(['ETH-USD']), 'Crypto', 'ethereum', crypto * 0.30);
+
+  // fold any fund slot under 1.5% of the plan into the biggest fund in the same bucket: a sliver
+  // that small adds a ticker to buy without changing the risk, and it was a big part of why the
+  // plan looked like a long list of ETFs
+  if (tuned) {
+    for (const h of holdings.slice()) {
+      if (h.weight >= 0.015 || /^single stock/.test(h.role)) continue;
+      const host = holdings.filter(x => x !== h && x.bucket === h.bucket && !/^single stock/.test(x.role))
+        .sort((a, b) => b.weight - a.weight)[0];
+      if (!host || host.weight < h.weight) continue;
+      host.weight += h.weight; holdings.splice(holdings.indexOf(h), 1);
+    }
+  }
 
   // some slots may have been skipped (missing instruments); renormalize invested weight so the
   // book plus the cash sleeve sums to exactly 100% of capital
@@ -230,7 +360,8 @@ UI.buildAllocation = function (capital, profileKey, nStocks, opts) {
   }
 
   return {
-    capital, profileKey, profile: P, regime, buckets, tilt, holdings, cashDollars,
+    capital, profileKey, profile: P, regime, buckets, tilt, holdings, cashDollars, tuned, nStocks,
+    excluded: [...UI.excludedSet()].sort(), stockPct: Q.sum(holdings.filter(h => /^single/.test(h.role)).map(h => h.dollars)) / capital,
     cashPct: cashDollars / capital, expVol, mc, asof: AL.asof, inverted,
     ts: new Date().toISOString().slice(0, 16).replace('T', ' '), regimeLabel: regime.label,
   };
@@ -254,15 +385,27 @@ UI.canonSector = s => (s == null ? '' : (UI.SECTOR_ALIASES[s] !== undefined ? UI
    six-engine conviction (Decision, ML, Advisor, peer valuation, Sentiment, seasonality), drop anything
    the decision engine rejects or the ensemble nets negative on, and keep one name per sector. So the
    book only opens positions where several independent engines agree, and each pick is defensible. */
-UI.topStockPicks = function (n) {
+UI.topStockPicks = function (n, opts) {
+  opts = opts || {};
   let scored;
   try { scored = UI.scoreStocks(); } catch (e) { return []; }
   if (!scored || !scored.rows) return [];
+  const key = opts.profile && UI.RISK_PROFILES[opts.profile] ? opts.profile : null;
+  const P = key ? UI.RISK_PROFILES[key] : null;
+  const ex = UI.excludedSet();
   // advisor-ranked shortlist of real, liquid, genuine-buy candidates; capped so the ensemble (which
   // fits an ML model per name) only runs on a bounded set. The cap is generous vs the ~5 we keep.
-  const shortlist = scored.rows.filter(r => UI.isLargeCap(r) && r.score >= 0.15).slice(0, 40);
+  // With a risk level, the shortlist is re-ranked by that level's fit and limited to names inside
+  // its volatility and beta limits, and anything you marked "can't buy" is skipped, so the next
+  // candidate in line takes its place.
+  const shortlist = key
+    ? scored.rows.filter(r => !ex.has(r.sym) && !UI.sectorExcluded(r.sector) && UI.isLargeCap(r) && UI.isOperatingCo(r)
+        && (!P.spOnly || !!(AL.sp500() && AL.sp500().cols[r.sym])))
+      .map(r => ({ r, fit: UI.profileFit(r, key) })).filter(x => x.fit.ok && x.fit.score >= 0.10)
+      .sort((a, b) => b.fit.score - a.fit.score).slice(0, Math.max(40, n * 4))
+    : scored.rows.filter(r => UI.isLargeCap(r) && r.score >= 0.15).slice(0, 40).map(r => ({ r, fit: null }));
   const ranked = [];
-  for (const r of shortlist) {
+  for (const { r, fit } of shortlist) {
     let call = null;
     try { call = UI.decision(r.sym).call; } catch (e) { }
     if (call === 'SELL') continue;            // never open a position the decision engine rejects
@@ -270,16 +413,16 @@ UI.topStockPicks = function (n) {
     try { sc = UI.symConviction(r.sym, scored); } catch (e) { }
     const conv = sc ? sc.conviction : (r.score || 0);   // fall back to the advisor score if fusion is unavailable
     if (conv <= 0) continue;                  // the fuller picture has to be net-positive to call it a leader
-    ranked.push({ r, conv });
+    ranked.push({ r, conv, rank: conv + (fit ? fit.adj : 0) });
   }
-  ranked.sort((a, b) => b.conv - a.conv);     // greatest absolute conviction first
-  const out = [], seenSector = {};
-  for (const { r } of ranked) {
+  ranked.sort((a, b) => b.rank - a.rank);     // greatest conviction first, plus the risk level's tilt
+  const out = [], perSector = {}, cap = P ? P.perSector : 1;
+  for (const { r, conv } of ranked) {
     if (out.length >= n) break;
     const sec = UI.canonSector(r.sector);
-    if (sec && seenSector[sec]) continue;     // one per sector (synonym-folded)
-    if (sec) seenSector[sec] = true;
-    out.push(r);
+    if (sec && (perSector[sec] || 0) >= cap) continue;   // sector cap (synonym-folded)
+    if (sec) perSector[sec] = (perSector[sec] || 0) + 1;
+    out.push(key ? { ...r, conv } : r);
   }
   return out;
 };
@@ -499,7 +642,11 @@ UI.dailyBriefing = function (target) {
   // decision engine does not reject. Ranked by conviction so the top ideas surface first.
   const opportunities = [];
   if (scored) {
-    scored.rows.filter(r => UI.isLargeCap(r) && r.score > 0.35 && !curW[r.sym]).slice(0, 12).forEach(r => {
+    // ideas follow the plan's risk level and skip anything marked "can't buy", so the next name in line surfaces
+    const key = target.profileKey || UI.riskProfile(), ex = UI.excludedSet();
+    scored.rows.filter(r => UI.isLargeCap(r) && UI.isOperatingCo(r) && !curW[r.sym] && !ex.has(r.sym) && !UI.sectorExcluded(r.sector))
+      .map(r => ({ r, fit: UI.profileFit(r, key) })).filter(x => x.fit.ok && x.fit.score > 0.35)
+      .sort((a, b) => b.fit.score - a.fit.score).slice(0, 12).map(x => x.r).forEach(r => {
       const s = sig(r.sym);
       if (s && s.conviction > 0.30 && !(s.dec && s.dec.call === 'SELL')) {
         opportunities.push({ sym: r.sym, name: r.name, sector: r.sector,
@@ -536,7 +683,8 @@ UI.def('command', 'Competition Center', '◎', 'Start Here', function (el, state
     liveValue = mv + cashMode;
   }
   const capital = state.capital != null ? state.capital : (liveValue != null ? liveValue : saved.capital);
-  const profile = state.profile || saved.profile;
+  const profile = UI.riskProfile();   // the one app-wide risk level, shared with Stock Advisor and the IPS
+  state.profile = null;               // never carry a stale chip choice over a change made elsewhere
 
   el.innerHTML = `
     <div class="section-title">Competition Command Center
@@ -576,9 +724,9 @@ UI.def('command', 'Competition Center', '◎', 'Start Here', function (el, state
     const cap = Math.max(1000, parseFloat(document.getElementById('cc-cap').value) || 100000);
     const prof = state.profile || profile;
     state.capital = cap;
-    const t = UI.buildAllocation(cap, prof, 5);
-    AL.store.set('command_target', t);
     AL.store.set('command_cfg', { capital: cap, profile: prof });
+    const t = UI.buildAllocation(cap, prof);
+    AL.store.set('command_target', t);
     state.view = 'plan';
     el.querySelectorAll('.chip[data-view]').forEach(x => x.classList.toggle('on', x.dataset.view === 'plan'));
     render();
@@ -587,6 +735,7 @@ UI.def('command', 'Competition Center', '◎', 'Start Here', function (el, state
     state.profile = c.dataset.prof;
     el.querySelectorAll('.chip[data-prof]').forEach(x => x.classList.toggle('on', x.dataset.prof === state.profile));  // move the highlight now
     buildFromControls();   // and re-plan immediately so the new risk level is visible at once
+    AL.bus.emit('profile:changed', state.profile);   // tell Stock Advisor and the rest of the app
   }));
   el.querySelectorAll('.chip[data-view]').forEach(c => c.addEventListener('click', () => { state.view = c.dataset.view; el.querySelectorAll('.chip[data-view]').forEach(x => x.classList.toggle('on', x.dataset.view === state.view)); render(); }));
   document.getElementById('cc-build').addEventListener('click', buildFromControls);
@@ -597,8 +746,18 @@ UI.def('command', 'Competition Center', '◎', 'Start Here', function (el, state
     const body = document.getElementById('cc-body');
     const sub = document.getElementById('cc-sub');
     let target = AL.store.get('command_target', null);
-    // first visit: auto-build a plan so there is never an empty screen
-    if (!target) { target = UI.buildAllocation(capital, profile, 5); AL.store.set('command_target', target); }
+    // first visit: auto-build a plan so there is never an empty screen. A saved plan is also rebuilt
+    // (same capital) when it no longer matches reality: new market data arrived, the risk level was
+    // changed elsewhere in the app, or the "can't buy" list changed. So the plan is never stale.
+    const why = !target ? '' : target.asof !== AL.asof ? `new market data (${AL.asof})`
+      : target.profileKey !== UI.riskProfile() ? `risk level changed to ${UI.RISK_PROFILES[UI.riskProfile()].label}`
+      : String(target.excluded || []) !== String([...UI.excludedSet()].sort()) ? 'your can\'t-buy list changed'
+      : !target.tuned ? 'the upgraded stock picker' : null;
+    if (!target || why) {
+      target = UI.buildAllocation(target ? target.capital : capital, UI.riskProfile());
+      AL.store.set('command_target', target);
+      if (why && UI.toast) UI.toast(`Plan rebuilt for ${why}`, 'ok');
+    }
     if ((state.view || 'plan') === 'daily') { sub.textContent = 'what to trade today to reach your plan'; renderDaily(body, target); }
     else { sub.textContent = `built ${target.ts} · regime at build: ${target.regimeLabel}`; renderPlan(body, target); }
   }
@@ -611,20 +770,27 @@ UI.def('command', 'Competition Center', '◎', 'Start Here', function (el, state
         <div class="tile"><div class="t-label">Regime now</div><div class="t-value ${t.regime.tone === 'good' ? 'up' : t.regime.tone === 'bad' ? 'dn' : ''}" style="font-size:15px">${t.regime.label}</div><div class="t-delta note">VIX ${f.n(t.regime.vix, 1)} · ${rp.label}</div></div>
         <div class="tile"><div class="t-label">Capital deployed</div><div class="t-value">${f.usd(t.capital - t.cashDollars)}</div><div class="t-delta note">${f.pct(1 - t.cashPct, 0)} invested</div></div>
         <div class="tile"><div class="t-label">Cash held</div><div class="t-value">${f.usd(t.cashDollars)}</div><div class="t-delta note">${f.pct(t.cashPct, 0)} dry powder</div></div>
-        <div class="tile"><div class="t-label">Positions</div><div class="t-value">${t.holdings.filter(h => h.shares > 0).length}</div></div>
+        <div class="tile"><div class="t-label">Positions</div><div class="t-value">${t.holdings.filter(h => h.shares > 0).length}</div><div class="t-delta note">${t.holdings.filter(h => h.shares > 0 && /^single/.test(h.role)).length} stocks · ${t.holdings.filter(h => h.shares > 0 && !/^single/.test(h.role)).length} funds</div></div>
+        <div class="tile"><div class="t-label">In individual stocks</div><div class="t-value">${f.pct(t.stockPct || 0, 0)}</div><div class="t-delta note">of the whole plan</div></div>
         <div class="tile"><div class="t-label">Est. annual volatility</div><div class="t-value">${t.expVol != null ? f.pct(t.expVol, 0) : '-'}</div><div class="t-delta note">target ~${f.pct(rp.vt, 0)}</div></div>
         ${t.mc ? `<div class="tile"><div class="t-label">1y vs cash (2k sims)</div><div class="t-value ${t.mc.median >= 0 ? 'up' : 'dn'}">${f.spct(t.mc.median)}</div><div class="t-delta note">worst 5%: ${f.spct(t.mc.p05)} · P(loss) ${f.pct(t.mc.pLoss, 0)}</div></div>` : ''}
       </div>
       <div class="note" style="margin-bottom:12px">Why this mix: ${t.tilt.join('; ')}.</div>
       <div class="grid g23">
-        <div style="min-width:0">${UI.panel('Your target portfolio', `<table class="tbl"><thead><tr><th>Ticker</th><th>What it is</th><th>Bucket</th><th class="r">Target %</th><th class="r">$ Amount</th><th class="r">Buy</th><th class="r">Price</th><th class="r">Call</th></tr></thead><tbody>` +
+        <div style="min-width:0">${UI.panel('Your target portfolio', `<table class="tbl"><thead><tr><th>Ticker</th><th>What it is</th><th>Bucket</th><th class="r">Target %</th><th class="r">$ Amount</th><th class="r">Buy</th><th class="r">Price</th><th class="r">Call</th><th></th></tr></thead><tbody>` +
           t.holdings.filter(h => h.shares > 0).map(h => `<tr>
             <td class="sym">${h.sym}</td><td class="t">${f.esc(h.role)}</td><td class="t" style="font-size:10px;color:var(--muted)">${h.bucket}</td>
             <td class="r">${f.pct(h.dollars / t.capital, 1)}</td><td class="r">${f.usd(h.dollars)}</td>
             <td class="r"><b>${h.cls === 'Crypto' ? h.shares : h.shares + ' sh'}</b></td><td class="r">${f.px(h.price)}</td>
-            <td class="r">${UI.callBadge(h.call, h.callKind)}</td></tr>`).join('') +
-          `<tr style="border-top:2px solid var(--line)"><td class="sym">CASH</td><td class="t">uninvested, held as dry powder</td><td></td><td class="r">${f.pct(t.cashPct, 1)}</td><td class="r">${f.usd(t.cashDollars)}</td><td class="r">-</td><td class="r">-</td><td class="r">-</td></tr>` +
-          '</tbody></table><div class="note" style="padding:8px 12px 2px">Call = the Buy / Sell / Hold Decision engine verdict for single stocks. Funds, bonds, gold and crypto instead show a price-trend read (Uptrend / Downtrend / Flat), since they have no company fundamentals to score.</div>', { nopad: true })}</div>
+            <td class="r">${UI.callBadge(h.call, h.callKind)}</td>
+            <td class="r"><button class="btn small" data-cantbuy="${h.sym}" title="Not available where you trade? Remove it and the next best pick takes its place">Can't buy</button></td></tr>`).join('') +
+          `<tr style="border-top:2px solid var(--line)"><td class="sym">CASH</td><td class="t">uninvested, held as dry powder</td><td></td><td class="r">${f.pct(t.cashPct, 1)}</td><td class="r">${f.usd(t.cashDollars)}</td><td class="r">-</td><td class="r">-</td><td class="r">-</td><td></td></tr>` +
+          '</tbody></table><div class="note" style="padding:8px 12px 2px">Call = the Buy / Sell / Hold Decision engine verdict for single stocks. Funds, bonds, gold and crypto instead show a price-trend read (Uptrend / Downtrend / Flat), since they have no company fundamentals to score. Can\'t buy removes a ticker you are not allowed to trade, everywhere in AlphaLab, and the plan rebuilds with the next best candidate.</div>' +
+          `<div class="controls" style="padding:6px 12px 10px;flex-wrap:wrap">
+            <label class="lbl">can't buy</label>
+            ${(t.excluded || []).length ? t.excluded.map(x => `<span class="chip" data-canbuy="${x}" title="Click to allow ${x} again">${x} &times;</span>`).join('') : '<span class="note">nothing removed</span>'}
+            <input class="inp" id="cc-exin" placeholder="add a ticker" style="width:110px">
+          </div>`, { nopad: true })}</div>
         <div style="display:flex;flex-direction:column;gap:12px;min-width:0">
           ${UI.panel('Asset-class mix', '<div class="chart" style="height:190px" id="cc-buckets"></div>')}
           ${UI.panel('Put this plan to work', `
@@ -637,6 +803,10 @@ UI.def('command', 'Competition Center', '◎', 'Start Here', function (el, state
     C.bars(document.getElementById('cc-buckets'), bucketRows, { horizontal: true, pct: true, sorted: true });
     document.getElementById('cc-apply').addEventListener('click', () => applyPlan(t));
     document.getElementById('cc-report').addEventListener('click', () => writeReport(t));
+    body.querySelectorAll('[data-cantbuy]').forEach(b => b.addEventListener('click', () => removeAndReplace(t, b.dataset.cantbuy)));
+    body.querySelectorAll('[data-canbuy]').forEach(c => c.addEventListener('click', () => { UI.restoreSym(c.dataset.canbuy); render(); }));
+    const exin = document.getElementById('cc-exin');
+    exin.addEventListener('keydown', e => { if (e.key === 'Enter' && exin.value.trim()) removeAndReplace(t, exin.value.trim().toUpperCase()); });
   }
 
   function renderDaily(body, t) {
@@ -690,6 +860,19 @@ UI.def('command', 'Competition Center', '◎', 'Start Here', function (el, state
       <div class="warn-box" style="margin-top:12px">This briefing fuses every engine in AlphaLab, but conviction is not a promise. No tool can guarantee you gain the most money or win the contest. Orders compare your saved plan to your live book and nothing executes until you press the button. Research, not advice, and verify contest rules before trading.</div>`;
     const ex = document.getElementById('cc-exec');
     if (ex) ex.addEventListener('click', () => execOrders(b, t));
+  }
+
+  // "can't buy here": exclude the ticker everywhere, rebuild at the same capital, and say what replaced it
+  function removeAndReplace(t, sym) {
+    const before = new Set(t.holdings.filter(h => h.shares > 0).map(h => h.sym));
+    UI.excludeSym(sym);
+    const nt = UI.buildAllocation(t.capital, t.profileKey);
+    AL.store.set('command_target', nt);
+    const added = nt.holdings.filter(h => h.shares > 0 && !before.has(h.sym)).map(h => h.sym);
+    const msg = !before.has(sym) ? `${sym} will be skipped from now on`
+      : added.length ? `Removed ${sym}, replaced with ${added.join(', ')}` : `Removed ${sym}, its weight was spread across the rest of the plan`;
+    if (UI.toast) UI.toast(msg, 'ok');
+    render();
   }
 
   // apply the whole target: replace the book with the exact share counts, book the cash

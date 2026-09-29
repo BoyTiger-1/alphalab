@@ -102,5 +102,38 @@ const brief3 = UI.dailyBriefing(target);
 check('concentration risk flags a lone oversized position', brief3.risks.some(r => r.sym === bigSym && r.weight > 0.25),
   brief3.risks.map(r => `${r.sym} ${(r.weight * 100).toFixed(0)}%`).join(', ') || 'none');
 
+// --- risk level reaches inside the equity bucket (website path, no stockShare override) -------
+const tp = {};
+for (const prof of ['conservative', 'balanced', 'aggressive']) tp[prof] = UI.buildAllocation(100000, prof);
+const stocksOf = t => t.holdings.filter(h => h.shares > 0 && /^single/.test(h.role));
+const avgVol = t => { const sc2 = UI.scoreStocks(); const v = stocksOf(t).map(h => sc2.bySym[h.sym] && sc2.bySym[h.sym].vol).filter(isFinite); return v.reduce((a, b) => a + b, 0) / (v.length || 1); };
+check('profiles hold different stock counts', stocksOf(tp.conservative).length < stocksOf(tp.aggressive).length,
+  `cons ${stocksOf(tp.conservative).length} vs aggr ${stocksOf(tp.aggressive).length}`);
+check('aggressive holds far more in individual stocks', tp.aggressive.stockPct > tp.balanced.stockPct && tp.balanced.stockPct > tp.conservative.stockPct && tp.aggressive.stockPct > 0.4,
+  ['conservative', 'balanced', 'aggressive'].map(k => `${k} ${(tp[k].stockPct * 100).toFixed(0)}%`).join(', '));
+check('conservative stocks are calmer than aggressive ones', avgVol(tp.conservative) < avgVol(tp.aggressive),
+  `avg vol ${(avgVol(tp.conservative) * 100).toFixed(0)}% vs ${(avgVol(tp.aggressive) * 100).toFixed(0)}%`);
+const setOf = t => new Set(stocksOf(t).map(h => h.sym));
+const overlap = [...setOf(tp.conservative)].filter(x => setOf(tp.aggressive).has(x)).length;
+check('conservative and aggressive pick different stocks', overlap < setOf(tp.conservative).size, `${overlap} shared`);
+check('conservative stays inside its vol limit', stocksOf(tp.conservative).every(h => { const r = UI.scoreStocks().bySym[h.sym]; return r && r.vol <= UI.RISK_PROFILES.conservative.maxVol; }));
+check('no fund, trust or note in the stock sleeve', ['conservative', 'balanced', 'aggressive'].every(k => stocksOf(tp[k]).every(h => UI.isOperatingCo(UI.scoreStocks().bySym[h.sym]))));
+check('no stock above the profile cap', ['conservative', 'balanced', 'aggressive'].every(k => stocksOf(tp[k]).every(h => h.dollars / 100000 <= UI.RISK_PROFILES[k].maxName + 0.005)));
+
+// --- "can't buy" removes a ticker and the next candidate fills the slot ------------------------
+const base = UI.buildAllocation(100000, 'balanced');
+const gone = stocksOf(base)[0].sym;
+UI.excludeSym(gone); UI.excludeSym('SPY');
+const repl = UI.buildAllocation(100000, 'balanced');
+check('excluded stock is replaced, count kept', !repl.holdings.some(h => h.sym === gone) && stocksOf(repl).length === stocksOf(base).length,
+  `${gone} out, now ${stocksOf(repl).map(h => h.sym).join(',')}`);
+check('excluded fund falls back to its alternative', !repl.holdings.some(h => h.sym === 'SPY') && repl.holdings.some(h => h.sym === 'VTI' || h.sym === 'DIA'));
+check('plan records the exclusions', repl.excluded.includes(gone) && repl.excluded.includes('SPY'));
+UI.restoreSym(gone); UI.restoreSym('SPY');
+check('restore brings the list back to empty', UI.excludedList().length === 0);
+// the bot's fixed recipe (explicit stockShare) is unchanged by the profile-driven picker
+const botT = UI.buildAllocation(100000, 'balanced', 10, { stockShare: 0.55 });
+check('bot path keeps its own stock count', stocksOf(botT).length <= 10 && !botT.tuned, `${stocksOf(botT).length} stocks`);
+
 console.log(fails ? `\n${fails} FAILURES` : '\nALL PASS');
 process.exit(fails ? 1 : 0);
