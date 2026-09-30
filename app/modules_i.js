@@ -876,7 +876,7 @@ DESK.ips = function (body) {
     AL.store.set('comp_ips', p);
     AL.bus.emit('exclusions:changed');          // IPS exclusions feed every recommender
     // the client's risk tolerance drives the app-wide risk level used by Competition Center and Stock Advisor
-    const prof = p.risk <= 2 ? 'conservative' : p.risk >= 4 ? 'aggressive' : 'balanced';
+    const prof = p.risk <= 2 ? 'conservative' : p.risk >= 4 ? (UI.riskProfile && UI.riskProfile() === 'shortterm' ? 'shortterm' : 'aggressive') : 'balanced';
     const changed = UI.setRiskProfile && UI.riskProfile() !== prof;
     if (changed) UI.setRiskProfile(prof);
     toast(changed ? `IPS saved. Risk level set to ${UI.RISK_PROFILES[prof].label} across AlphaLab.` : 'IPS saved', 'ok');

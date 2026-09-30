@@ -146,7 +146,7 @@ check('calibrated factor weights are never negative and never exceed the prior t
 check('factor vote is silenced when the out-of-sample composite has no edge', bt && (bt.composite.calibrated.t >= 1 || bt.compositeMult === 0), bt && `composite t=${bt.composite.calibrated.t.toFixed(2)}`);
 check('aligned beta is sane for a mega-cap', (() => { const b = UI.alignedBeta('AAPL'); return b > 0.5 && b < 2; })(), `AAPL beta ${(UI.alignedBeta('AAPL') || 0).toFixed(2)}`);
 UI._picksCache = {};
-const plans = Object.fromEntries(['conservative', 'balanced', 'aggressive'].map(k => [k, UI.buildAllocation(100000, k)]));
+const plans = Object.fromEntries(['conservative', 'balanced', 'aggressive', 'shortterm'].map(k => [k, UI.buildAllocation(100000, k)]));
 for (const k of Object.keys(plans)) {
   const t = plans[k], P = UI.RISK_PROFILES[k], b = t.brain;
   check(`${k}: plan carries the brain's record`, b && b.sleeve && b.risk);
@@ -161,6 +161,18 @@ for (const k of Object.keys(plans)) {
   check(`${k}: only VALIDATED strategies time a fund`, b.timing.every(x => x.ids.every(id => Object.values(ev.bySym).flat().some(e => e.id === id && e.verdict === 'VALIDATED'))),
     b.timing.map(x => `${x.sym} ${x.n} strat, long ${(x.s * 100).toFixed(0)}%`).join('; ') || 'no validated strategy on these funds');
 }
+// --- short-term risk level: two-week signals, tested walk-forward, gated by their own evidence -----
+const sbt = UI.shortBacktest();
+check('short-horizon backtest runs walk-forward on the S&P 500', sbt && sbt.periods >= 100 && sbt.horizonWeeks === 2, sbt && `${sbt.periods} periods, composite t=${sbt.composite.t.toFixed(2)}, net ${(sbt.composite.netAnn * 100).toFixed(1)}%/yr`);
+check('short-horizon weights are never negative', sbt && sbt.factors.every(x => x.weight >= 0));
+check('short-term vote is off unless the backtest beat the market after costs', sbt && (sbt.composite.netAnn > 0 || sbt.compositeMult === 0));
+const stPicks = stocksOf(plans.shortterm).map(h => h.sym);
+const stVote = stPicks.length && UI.brainConviction(stPicks[0], UI.scoreStocks(), 'shortterm');
+check('short-term plan ranks with the two-week signals', stVote && stVote.votes.some(v => v.engine === 'Short-term signals' && Math.abs(v.w - UI.ENGINE_W.short.short * sbt.compositeMult) < 1e-9), stPicks.join(','));
+check('long-horizon levels never hear the two-week vote', ['conservative', 'balanced', 'aggressive'].every(k => { const s0 = stocksOf(plans[k])[0]; const c = s0 && UI.brainConviction(s0.sym, UI.scoreStocks(), k); return !c || !c.votes.some(v => v.engine === 'Short-term signals'); }));
+check('short-term holds fewer, bigger stock positions than aggressive', stPicks.length <= stocksOf(plans.aggressive).length && plans.shortterm.stockPct >= plans.aggressive.stockPct - 0.05,
+  `${stPicks.length} stocks ${(plans.shortterm.stockPct * 100).toFixed(0)}% vs ${stocksOf(plans.aggressive).length} stocks ${(plans.aggressive.stockPct * 100).toFixed(0)}%`);
+check('short-term picks are real operating companies', stPicks.every(sym => UI.isOperatingCo(UI.scoreStocks().bySym[sym])));
 const sz = UI.sizeSleeve(stocksOf(plans.balanced).map(h => ({ ...UI.scoreStocks().bySym[h.sym], conv: 0.3, agreeFrac: 0.6 })), 'balanced', 0.15);
 check('sleeve optimizer respects the cap and sums to at most 1', sz.w.every(w => w <= 0.15 + 1e-9) && Q.sum(sz.w) <= 1 + 1e-9, sz.w.map(w => w.toFixed(3)).join(' '));
 const bcSym = ['AAPL', 'MSFT', 'JPM'].find(x => UI.scoreStocks().bySym[x]);

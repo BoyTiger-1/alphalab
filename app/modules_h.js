@@ -39,6 +39,15 @@ UI.RISK_PROFILES = {
     maxCorr: 0.80, blMix: 0.7, budget: { vol: 0.22, stress: -0.55 },
     tilt: { vol: -0.08, quality: 0, consistency: 0, mom: 0.15, growth: 0.12, beta: 0.12 },
     stockStyle: 'high-momentum, high-growth, higher-beta names' },
+  // days-to-weeks growth: nearly all stocks, few names, high beta, sized for big swings. Stocks are
+  // ranked by the signals that were tested on two-week holds (see UI.shortBacktest), not by the
+  // long-run factor score, and the plan is meant to be rebuilt every couple of weeks.
+  shortterm: { label: 'Short-term', blurb: 'chase gains over days to weeks, the biggest swings', eq: 0.86, bond: 0, real: 0.04, crypto: 0.08, cash: 0.02, vt: 0.28,
+    stockShare: 0.85, nStocks: 8, maxVol: 1.2, maxBeta: 4, perSector: 3, maxName: 0.14, weighting: 'conviction',
+    maxCorr: 0.85, blMix: 0.85, budget: { vol: 0.30, stress: -0.70 },
+    tilt: { vol: 0, quality: 0, consistency: 0, mom: 0, growth: 0, beta: 0 },
+    horizon: 'short', holdWeeks: 2,
+    stockStyle: 'high-beta names that just pulled back, held about two weeks' },
 };
 
 // One risk level for the whole app: Competition Center, Stock Advisor, the daily briefing and the
@@ -112,7 +121,12 @@ UI.profileFit = function (r, key) {
   const ok = !(r.vol > P.maxVol) && !(beta > P.maxBeta);
   const adj = t.vol * (r.z_vol || 0) + t.quality * (r.z_quality || 0) + t.consistency * (r.z_consistency || 0)
     + t.mom * (r.z_mom || 0) + t.growth * (r.z_growth || 0) + t.beta * (beta - 1);
-  const base = UI.calScore ? UI.calScore(r) : (r.score || 0);
+  let base = UI.calScore ? UI.calScore(r) : (r.score || 0);
+  if (P.horizon === 'short' && UI.shortScores) {
+    // rank on the two-week signals, only as far as their walk-forward backtest earned after costs
+    const ss = UI.shortScores(), x = ss.bySym[r.sym];
+    base = (ss.bt && ss.bt.compositeMult > 0 && x ? x.score : 0) + 0.3 * base;
+  }
   return { ok, adj, beta, score: base + adj };
 };
 
@@ -223,7 +237,7 @@ UI.buildAllocation = function (capital, profileKey, nStocks, opts) {
   // dividend / low-volatility fund, so the index side of the equity bucket follows the risk level too
   const eqMix = (defensive || (tuned && profileKey === 'conservative'))
     ? { core: 0.34, stocks: 0.14, growth: 0.08, intl: 0.16, em: 0.08, div: 0.20 }
-    : { core: 0.30, stocks: 0.24, growth: 0.16, intl: 0.16, em: 0.10, div: tuned && profileKey === 'aggressive' ? 0 : 0.04 };
+    : { core: 0.30, stocks: 0.24, growth: 0.16, intl: 0.16, em: 0.10, div: tuned && (profileKey === 'aggressive' || profileKey === 'shortterm') ? 0 : 0.04 };
   if (tuned) opts = { ...opts, stockShare: P.stockShare * (defensive ? 0.8 : 1) };   // stressed tape: a bit more index, less single-name risk
   // Optional caller lever (the bot uses this): push single-stock conviction to a bigger share of the
   // equity bucket, shrinking the index sub-sleeves proportionally to make room, so the book leans into
@@ -469,7 +483,7 @@ UI.topStockPicks = function (n, opts) {
     let sc = null;
     // website path: every engine's vote is weighted by its evidence (UI.brainConviction); the bot's
     // path keeps the classic six-engine fusion unchanged
-    try { sc = key && UI.brainConviction ? UI.brainConviction(r.sym, scored) : UI.symConviction(r.sym, scored); } catch (e) { }
+    try { sc = key && UI.brainConviction ? UI.brainConviction(r.sym, scored, key) : UI.symConviction(r.sym, scored); } catch (e) { }
     const conv = sc ? sc.conviction : (r.score || 0);   // fall back to the advisor score if fusion is unavailable
     if (conv <= 0) continue;                  // the fuller picture has to be net-positive to call it a leader
     ranked.push({ r, conv, sc, rank: conv + (fit ? fit.adj : 0) });
