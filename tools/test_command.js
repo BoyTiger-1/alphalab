@@ -166,7 +166,14 @@ check('sleeve optimizer respects the cap and sums to at most 1', sz.w.every(w =>
 const bcSym = ['AAPL', 'MSFT', 'JPM'].find(x => UI.scoreStocks().bySym[x]);
 const bc = bcSym && UI.brainConviction(bcSym, UI.scoreStocks());
 const mlv = bc && bc.votes.find(v => v.engine === 'ML forecast');
-check('ML votes only with a significant walk-forward record', !mlv || (mlv.w > 0) === ((UI.mlEvidence(bc.sym) || { t: 0 }).t >= 1), mlv ? `${bcSym} ${mlv.why}` : 'no ML vote');
+check('ML votes only when a model clears the many-models bar', !mlv || (mlv.w > 0) === (UI.mlVoters(UI.mlEvidence(bc.sym)).pass.length > 0), mlv ? `${bcSym} ${mlv.why}` : 'no ML vote');
+check('many-models bar rises with the number of models tested', UI.mlTStar(1) === 1 && UI.mlTStar(15) > 2.2 && UI.mlTStar(15) < 2.4, `k=15 needs t >= ${UI.mlTStar(15)}`);
+const mlPre = window.ALPHALAB_EVIDENCE && window.ALPHALAB_EVIDENCE.ml;
+if (mlPre && Object.values(mlPre).some(x => x.models)) {
+  const k = Math.max(...Object.values(mlPre).map(x => Object.keys(x.models || {}).length));
+  check('prebuilt ML evidence covers the deep sequence models', k >= 12 && Object.values(mlPre).some(x => x.models && x.models.lstm && x.models.transformer), `${Object.keys(mlPre).length} names, up to ${k} models`);
+  check('every stored model call is on the -1..+1 scale', Object.values(mlPre).every(x => Object.values(x.models || {}).every(m => m.sig == null || Math.abs(m.sig) <= 1)));
+}
 
 console.log(fails ? `\n${fails} FAILURES` : '\nALL PASS');
 process.exit(fails ? 1 : 0);

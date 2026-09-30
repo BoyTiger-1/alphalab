@@ -67,14 +67,20 @@ AL.weeklyValues = function (sym) {
   if (!sp) return null;
   if (sp.cols[sym]) { const e = sp.cols[sym]; const v = dec(e.c, e.s); const out = new Array(sp.wcal.length).fill(null); for (let i = 0; i < v.length; i++) out[e.f + i] = v[i]; return out; }
   const s = AL.getSeries(sym);
-  if (!s) return null;
-  const m = new Map(s.dates.map((d, i) => [d, s.values[i]]));
-  let last = null, j = 0;
-  const sorted = s.dates;
-  return sp.wcal.map(w => {
-    while (j < sorted.length && sorted[j] <= w) { last = s.values[j]; j++; }
-    return last;
-  });
+  if (!s || !s.dates.length) return null;
+  // The weekly bundles label each bar by its Monday but hold that week's LAST close (Yahoo weekly
+  // convention), so a daily series is sampled at its last close before the NEXT label. Sampling the
+  // Monday itself ran every daily series four days out of step with the stocks and pushed betas to ~0.
+  const W = sp.wcal, d = s.dates, v = s.values;
+  const out = new Array(W.length).fill(null);
+  let j = 0, last = null;
+  for (let k = 0; k < W.length; k++) {
+    const end = k + 1 < W.length ? W[k + 1] : '9999-12-31';
+    while (j < d.length && d[j] < end) { last = v[j]; j++; }
+    // no value before the series starts, and none long after it stopped
+    out[k] = d[0] < end && (j < d.length || Date.parse(W[k]) - Date.parse(d[d.length - 1]) < 14 * 864e5) ? last : null;
+  }
+  return out;
 };
 
 AL.ohlc = function (sym) {

@@ -45,7 +45,7 @@ jobs:
         run: |
           python tools/build_bundle.py
           node tools/build_mlcache.js || echo "ML cache build failed, app will train in the browser"
-          node tools/build_evidence.js || echo "evidence build failed, app will compute it in the browser"
+          timeout 45m node tools/build_evidence.js || echo "evidence build failed or timed out, app keeps the previous evidence"
           python tools/assemble.py
           cp dist/alphalab.html docs/index.html
           cp dist/version.json docs/version.json

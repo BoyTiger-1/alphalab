@@ -23,30 +23,13 @@ UI.FACTOR_LABEL = { z_mom: '6-month momentum', z_trend: 'trend vs 40-week averag
   z_vol: 'low volatility', z_consistency: 'share of positive months', z_secRel: 'momentum vs own sector' };
 
 /* ---------- weekly returns on the shared S&P grid (any symbol, cached) ---------- */
-// The weekly bundles label each bar by its Monday but hold that week's LAST close (Yahoo weekly
-// convention). A daily series must therefore be sampled at the last close before the NEXT label, not
-// at the Monday itself, or it runs four days out of step with every stock. AL.weeklyValues samples
-// the Monday, so its stock-vs-SPY betas come out near zero; this aligned version is used here.
+// AL.weeklyValues samples every series at the week's last close (the bundles' convention), so all
+// symbols line up on the same grid; cached here because correlations and betas reuse it heavily.
 UI._wkv = UI._wkv || {};
 UI.weeklyAligned = function (sym) {
   if (sym in UI._wkv) return UI._wkv[sym];
-  const sp = AL.sp500();
   let out = null;
-  if (sp && sp.cols[sym]) out = AL.weeklyValues(sym);
-  else if (sp) {
-    const s = AL.getSeries(sym);
-    if (s && s.dates.length) {
-      const W = sp.wcal, d = s.dates, v = s.values;
-      out = new Array(W.length).fill(null);
-      let j = 0, last = null;
-      for (let k = 0; k < W.length; k++) {
-        const end = k + 1 < W.length ? W[k + 1] : '9999-12-31';
-        while (j < d.length && d[j] < end) { last = v[j]; j++; }
-        // no value before the series starts, and none long after it stopped
-        out[k] = d[0] < end && (j < d.length || Date.parse(W[k]) - Date.parse(d[d.length - 1]) < 14 * 864e5) ? last : null;
-      }
-    }
-  }
+  try { out = AL.weeklyValues(sym); } catch (e) { }
   return (UI._wkv[sym] = out);
 };
 UI._wk = UI._wk || {};
@@ -68,9 +51,8 @@ UI.pairCorr = function (a, b, n = 104) {
   return xs.length >= 40 ? Q.corr(xs, ys) : null;
 };
 
-// beta to the S&P 500 on correctly aligned weekly returns (last two years, at least 40 common weeks).
-// AL.weeklyValues samples daily series at the Monday label while the bundle holds the Friday close,
-// which pushes the classic scoreStocks beta toward zero; this is the website's corrected read.
+// beta to the S&P 500 on weekly returns over the last two years (at least 40 common weeks): a
+// steadier read than the Stock Advisor's one-year beta, used for risk limits and crisis proxies.
 UI._abeta = UI._abeta || {};
 UI.alignedBeta = function (sym, n = 104) {
   if (sym in UI._abeta) return UI._abeta[sym];
@@ -203,10 +185,30 @@ UI.calScore = function (r) {
   return s;
 };
 
-/* ---------- 2. ML forecast evidence, per name ----------
-   The same ridge model the ML vote uses, run walk-forward (train only on the past, predict the next
-   bar), scored on non-overlapping forecast windows so the t-stat is not inflated. Prebuilt in CI
-   (data/evidence.js); computed on demand for anything missing. */
+/* ---------- 2. ML forecast evidence, per name and per model ----------
+   Every model in the ML lab (linear, trees, kernels, nets, the RL agent and the deep sequence
+   models) is run walk-forward on each name: train only on the past with purging, predict the next
+   bar, refit on a schedule. Each is scored on non-overlapping forecast windows so the t-stat is not
+   inflated. Testing many models on one name raises the odds that one looks good by luck, so the
+   bar a model must clear rises with the number tested (Bonferroni on the one-model t >= 1 bar):
+   with 15 models a model needs t of about 2.2 to vote. The deep models are too heavy for the
+   browser, so the full zoo is prebuilt in CI (data/evidence.js); on demand only ridge runs. */
+UI.ML_ZOO = [
+  { id: 'ridge', p: { lambda: 3, refit: 126 } },
+  { id: 'logistic' }, { id: 'elasticnet' }, { id: 'svm' }, { id: 'nb' }, { id: 'knn' },
+  { id: 'rf' }, { id: 'extratrees' }, { id: 'gbdt' }, { id: 'mlp' }, { id: 'dqn' },
+  { id: 'lstm', seq: true }, { id: 'gru', seq: true }, { id: 'alstm', seq: true }, { id: 'transformer', seq: true },
+];
+const SEQ_P = { trainCap: 1500, epochs: 6, warmEpochs: 2 };
+// the t a model must clear when k models were tested on the same name (one-sided, family-wise
+// false-vote rate held at the single-model t >= 1 level, about 16%)
+UI.mlTStar = function (k) {
+  if (!(k > 1)) return 1;
+  const target = 1 - (1 - Q.normCdf(1)) / k;
+  let lo = 1, hi = 6;
+  for (let i = 0; i < 50; i++) { const mid = (lo + hi) / 2; if (Q.normCdf(mid) < target) lo = mid; else hi = mid; }
+  return +((lo + hi) / 2).toFixed(3);
+};
 UI._mlEv = UI._mlEv || {};
 UI.mlEvidence = function (sym) {
   if (sym in UI._mlEv) return UI._mlEv[sym];
@@ -214,21 +216,51 @@ UI.mlEvidence = function (sym) {
   if (pre && sym in pre) return (UI._mlEv[sym] = pre[sym]);
   return (UI._mlEv[sym] = UI.computeMlEvidence(sym));
 };
-UI.computeMlEvidence = function (sym) {
+// one model's walk-forward record on one name, plus what it says today
+UI.computeModelEvidence = function (sym, spec) {
   try {
-    const ser = AL.getSeries(sym);
-    if (!ser || ser.cls !== 'Equity' || typeof ML === 'undefined' || !ML.makeFeatures) return null;
-    const F = ML.makeFeatures(sym, 5);
-    if (!F || F.X.length < 400) return null;                 // same gate as the live ML vote
-    const wf = ML.walkForward(F, 'ridge', { lambda: 3, refit: 126, minTrain: Math.max(200, Math.min(750, Math.floor(F.X.length / 2))) });
+    const M = ML.models[spec.id];
+    if (!M) return null;
+    const F = spec.seq ? ML.featuresFor({ model: spec.id, sym, horizon: 5 }) : ML.makeFeatures(sym, 5);
+    if (!F || F.X.length < 400) return null;
+    const minTrain = Math.max(200, Math.min(750, Math.floor(F.X.length / 2)));
+    const wf = ML.walkForward(F, spec.id, { refit: 252, ...(spec.seq ? SEQ_P : {}), ...(spec.p || {}), minTrain });
     const xs = [], ys = [];
     for (let i = 0; i < wf.preds.length; i += 5) if (isFinite(wf.preds[i]) && isFinite(F.y[i])) { xs.push(wf.preds[i]); ys.push(F.y[i]); }
     if (xs.length < 40) return null;
     const ic = Q.spearman(xs, ys);
+    if (!isFinite(ic)) return null;
     const t = ic * Math.sqrt((xs.length - 2) / Math.max(1e-9, 1 - ic * ic));
     const hit = xs.filter((x, i) => Math.sign(x) === Math.sign(ys[i])).length / xs.length;
-    return { ic: +ic.toFixed(4), t: +t.toFixed(2), n: xs.length, hit: +hit.toFixed(3) };
+    // today's call: the newest out-of-sample week, scaled by how big this model's calls usually are
+    const all = wf.preds.filter(isFinite), last = wf.preds.slice(-5).filter(isFinite);
+    const sd = Q.std(all) || 1e-9;
+    const sig = last.length ? clamp((Q.mean(last) - Q.mean(all)) / (2 * sd), -1, 1) : null;
+    return { ic: +ic.toFixed(4), t: +t.toFixed(2), n: xs.length, hit: +hit.toFixed(3), sig: sig == null ? null : +sig.toFixed(3) };
   } catch (e) { return null; }
+};
+// all = true runs the whole zoo (CI); otherwise ridge only, which is fast enough for the browser
+UI.computeMlEvidence = function (sym, all) {
+  const ser = AL.getSeries(sym);
+  if (!ser || ser.cls !== 'Equity' || typeof ML === 'undefined' || !ML.makeFeatures) return null;
+  const models = {};
+  for (const spec of UI.ML_ZOO) {
+    if (!all && spec.id !== 'ridge') continue;
+    if (spec.seq && !ML.featuresFor) continue;
+    const ev = UI.computeModelEvidence(sym, spec);
+    if (ev) models[spec.id] = ev;
+  }
+  const r = models.ridge;
+  if (!r) return null;
+  return { ic: r.ic, t: r.t, n: r.n, hit: r.hit, models };
+};
+// the models that earned a vote on this name after the many-models correction
+UI.mlVoters = function (ev) {
+  if (!ev) return { k: 0, tStar: 1, pass: [], models: {} };
+  const models = ev.models || { ridge: { ic: ev.ic, t: ev.t, n: ev.n, hit: ev.hit, sig: null } };
+  const ids = Object.keys(models), k = ids.length, tStar = UI.mlTStar(k);
+  const pass = ids.filter(id => models[id].t >= tStar).map(id => ({ id, ...models[id] })).sort((a, b) => b.t - a.t);
+  return { k, tStar, pass, models };
 };
 
 /* ---------- 3. strategy-library evidence ----------
@@ -293,10 +325,21 @@ UI.brainConviction = function (sym, scored) {
   if (base.dec && base.dec.coverage > 0)
     push('Decision engine', base.dec.overall / 0.4, 1.0, 'judgment', `Decision engine: ${base.dec.call} (${base.dec.overall >= 0 ? '+' : ''}${base.dec.overall.toFixed(2)})`);
   if (base.ml) {
-    const ev = UI.mlEvidence(sym), m = ev ? (ev.t >= 1 ? evidenceMult(ev.t) : 0) : 0;
-    push('ML forecast', base.ml.z, 0.8 * m, ev ? 'backtested' : 'untested',
-      `ML model projects ${base.ml.pred >= 0 ? '+' : ''}${(base.ml.pred * 100).toFixed(1)}% next period` +
-      (ev ? `; walk-forward IC ${f.n(ev.ic, 3)} (t=${f.n(ev.t, 1)}, ${ev.n} tests)${m ? '' : ', not significant, so it does not vote'}` : '; no out-of-sample record, so it does not vote'));
+    // one ML vote, from the models whose own walk-forward record clears the many-models bar on this
+    // name, each weighted by its evidence; ridge's live forecast stands in when ridge has no stored call
+    const ev = UI.mlEvidence(sym), mv = UI.mlVoters(ev);
+    const sigOf = x => x.sig != null ? x.sig : x.id === 'ridge' ? base.ml.z : null;
+    const pass = mv.pass.filter(x => sigOf(x) != null);
+    const ms = pass.map(x => evidenceMult(x.t)), msum = Q.sum(ms);
+    const v = msum ? pass.reduce((a, x, i) => a + ms[i] * sigOf(x), 0) / msum : base.ml.z;
+    const m = pass.length ? Math.max(...ms) : 0;
+    const best = ev ? Object.entries(mv.models).sort((a, b) => b[1].t - a[1].t)[0] : null;
+    push('ML forecast', v, 0.8 * m, ev ? 'backtested' : 'untested',
+      `Ridge model projects ${base.ml.pred >= 0 ? '+' : ''}${(base.ml.pred * 100).toFixed(1)}% next period` +
+      (!ev ? '; no out-of-sample record, so it does not vote'
+        : pass.length ? `; ${pass.length} of ${mv.k} models pass the walk-forward bar (t >= ${f.n(mv.tStar, 1)}): ${pass.map(x => `${x.id} t=${f.n(x.t, 1)}`).join(', ')}.` +
+          ` Measured against their usual forecast for this name they lean ${v >= 0 ? 'up' : 'down'} (${v >= 0 ? '+' : ''}${v.toFixed(2)} on a -1 to +1 scale)`
+        : `; none of ${mv.k} model${mv.k > 1 ? 's' : ''} clears the walk-forward bar (t >= ${f.n(mv.tStar, 1)}; best ${best[0]} t=${f.n(best[1].t, 1)}), so it does not vote`));
   }
   const row = scored && scored.bySym ? scored.bySym[sym] : null;
   if (row) {
@@ -493,14 +536,20 @@ UI.brainPanel = function (t, opts = {}) {
   const nVal = allSt.filter(x => x.verdict === 'VALIDATED').length;
   const mlPre = window.ALPHALAB_EVIDENCE && window.ALPHALAB_EVIDENCE.ml;
   const mlAll = mlPre ? Object.values(mlPre) : [];
-  const mlSig = mlAll.filter(x => x.t >= 1).length;
+  const mlVot = mlAll.map(x => UI.mlVoters(x));
+  const mlSig = mlVot.filter(x => x.pass.length).length;
+  const mlK = mlVot.length ? Math.max(...mlVot.map(x => x.k)) : 1;
+  const mlByModel = {};
+  mlVot.forEach(x => x.pass.forEach(p => mlByModel[p.id] = (mlByModel[p.id] || 0) + 1));
+  const mlTop = Object.entries(mlByModel).sort((a, b) => b[1] - a[1]).map(([id, n]) => `${id} ${n}`).join(', ');
   const badge = (ok, yes, no) => `<span class="badge ${ok ? 'ok' : 'dim'}">${ok ? yes : no}</span>`;
   const sec = (title, html) => `<div style="margin-top:14px"><div style="font-weight:600;margin-bottom:6px">${title}</div>${html}</div>`;
 
   // 1. the engines and how much each is trusted
   const engines = [
     ['Decision engine', 'fundamentals, valuation, quality, momentum and analyst view in one Buy / Sell verdict', '1.00', 'judgment', true],
-    ['ML forecast', 'ridge model on price and volume features, next-week return', `0.80 x evidence`, mlAll.length ? `walk-forward record on ${mlAll.length} names, ${mlSig} significant (t >= 1)` : 'computed per name on demand', true],
+    ['ML forecast', `${mlK > 1 ? `${mlK} models (linear, trees, kernels, nets, RL agent, LSTM / GRU / attention / transformer)` : 'ridge model'} on price and volume features, next-week return`, `0.80 x evidence`,
+      mlAll.length ? `walk-forward record on ${mlAll.length} names; ${mlSig} have a model clearing t >= ${f.n(UI.mlTStar(mlK), 1)} after the many-models correction${mlTop ? ` (${mlTop})` : ''}` : 'ridge computed per name on demand', mlSig > 0 || !mlAll.length],
     ['Factor score', 'Stock Advisor score with backtest-calibrated price-factor weights', bt ? `0.70 x ${bt.compositeMult.toFixed(2)}` : '0.70', bt ? `out-of-sample composite t = ${f.n(bt.composite.calibrated.t, 2)}` : 'backtest unavailable', !bt || bt.compositeMult > 0],
     ['Peer valuation', 'P/E, P/B, margins vs sector peers', '0.60', 'judgment (snapshot, no history to test)', true],
     ['Sentiment', 'social chatter and news tone', '0.50', 'judgment (snapshot, no history to test)', true],
