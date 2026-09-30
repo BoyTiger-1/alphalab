@@ -1,22 +1,22 @@
 # Runs the AlphaLab paper bot in the cloud, so trading happens with your computer off.
 #
-# We want the bot acting about once a minute all session. GitHub's own scheduler cannot fire faster than
-# every 5 minutes AND is best-effort: it routinely delays or drops scheduled runs, so a sparse cron
-# leaves long dead windows with no trading. So each scheduled run is a short-lived "supervisor" that
-# loops internally, trading every ~60 seconds for ~14 minutes, and the cron fires every 5 minutes (the
-# fastest GitHub allows). Because a 14-minute supervisor outlives the 5-minute cron interval, the next
-# fire is always queued behind the running one (concurrency below serializes them) and starts the instant
-# it ends, so the supervisors chain back-to-back and coverage stays continuous even when GitHub skips
-# some fires. Each bot call is its own fresh Node process, so live prices and the learning read are
-# recomputed clean every minute with no stale state.
+# We want the bot acting about once a minute for the whole session. GitHub's scheduler is best-effort,
+# and in practice it fires the every-5-minutes cron only two or three times a day, hours late (runs
+# landed around 17:30, 20:30 and 23:00 UTC, the last one after the close). Short supervisors that each
+# trade for 14 minutes therefore covered only ~30 minutes of a 6.5-hour session.
 #
-# Honest limit: nothing inside GitHub Actions can GUARANTEE a trade every single minute, because the
-# whole chain depends on GitHub firing the cron at all. This setup makes it as continuous as the free
-# tier allows. For a hard per-minute guarantee you need an always-on host (a small VM or a service with
-# a real scheduler); see bot/README.md.
+# So the cron is now just a doorbell. Whichever fire lands first starts ONE long supervisor that:
+#   - waits for the open if it arrived early (the early-morning crons below exist for this),
+#   - runs the bot every ~60 seconds until Alpaca's clock says the market has closed,
+#   - and, if it reaches GitHub's 6-hour job limit while the market is still open, starts a fresh copy
+#     of itself (workflow_dispatch with chain=true) that picks up where it left off.
+# Market hours, holidays and early closes all come from Alpaca's clock (bot/session.js).
 #
-# This repo is public, so GitHub Actions minutes are free and unlimited, which is what makes the
-# overlapping per-minute loop all day practical.
+# Honest limit: the first fire of the day still depends on GitHub. If the earliest one lands at 17:30
+# UTC, the morning is missed that day. For a guaranteed start at the open, trigger this workflow from an
+# always-on scheduler (see bot/README.md).
+#
+# This repo is public, so GitHub Actions minutes are free and unlimited.
 #
 # Setup you do once (see bot/README.md for the click-by-click):
 #   Settings -> Secrets and variables -> Actions -> New repository secret
@@ -34,26 +34,33 @@ name: AlphaLab paper bot
 
 on:
   schedule:
-    - cron: '*/5 13-21 * * 1-5'   # a supervisor every 5 min (GitHub's max), weekdays, 13:00-21:55 UTC (covers 9:30-16:00 ET year round). Supervisors overlap and chain so coverage stays continuous.
-  workflow_dispatch:               # also lets you run a single pass by hand from the Actions tab
+    - cron: '7,37 8-12 * * 1-5'    # early doorbells: GitHub runs these late, so one usually lands before or near the 13:30/14:30 UTC open
+    - cron: '*/5 13-21 * * 1-5'    # and every 5 min through the session in case the morning ones were dropped
+  workflow_dispatch:
     inputs:
       dry_run:
         description: 'Dry run (compute and log orders without sending any)'
         type: boolean
         default: false
+      chain:
+        description: 'Run as a full-session supervisor (set automatically when a supervisor hands off)'
+        type: boolean
+        default: false
 
-# never let two supervisors run at once and double-trade; a late one just queues behind the current one
+# only one supervisor at a time, so accounts are never double-traded. Doorbells that ring while one is
+# running just wait, then see the supervisor already covered the day and exit in seconds.
 concurrency:
   group: alphalab-paper-bot
   cancel-in-progress: false
 
 permissions:
   contents: read
+  actions: write     # lets a supervisor start its own successor before the 6-hour job limit
 
 jobs:
   trade:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 358
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -67,28 +74,46 @@ jobs:
           ALPACA_SECRET_KEY_2: ${{ secrets.ALPACA_SECRET_KEY_2 }}
           FINNHUB_KEY: ${{ secrets.FINNHUB_KEY }}   # optional: your own live-quote key, else the public one is used
           DRY_RUN: ${{ github.event.inputs.dry_run == 'true' && '1' || '' }}
+          SUPERVISE: ${{ (github.event_name == 'schedule' || github.event.inputs.chain == 'true') && '1' || '' }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          # Preflight: without the paper keys the bot cannot reach the account and every iteration
-          # would fail identically. Fail the whole run loudly (a red X in the Actions tab) instead of
-          # looping for 14 minutes and reporting a misleading green. Add the two secrets under
-          # Settings -> Secrets and variables -> Actions, then re-run. See bot/README.md.
+          # Preflight: without the paper keys every iteration would fail identically. Fail loudly instead.
           if [ -z "$ALPACA_KEY_ID" ] || [ -z "$ALPACA_SECRET_KEY" ]; then
             echo "::error title=Alpaca keys not set::Add ALPACA_KEY_ID and ALPACA_SECRET_KEY as repository secrets (Settings -> Secrets and variables -> Actions), then re-run. See bot/README.md."
             exit 1
           fi
-          if [ "${{ github.event_name }}" = "schedule" ]; then
-            # supervisor: trade every ~60s for ~14 minutes, then let the next (already-queued) supervisor
-            # take over. We time each loop so the PERIOD is ~60s: a two-account pass takes ~30s, so a flat
-            # 60s sleep would drift trades out to ~90s apart. Sleep only the remainder of the minute.
-            end=$(( $(date +%s) + 840 ))
-            while [ "$(date +%s)" -lt "$end" ]; do
+          if [ -z "$SUPERVISE" ]; then
+            node bot/run.js     # manual run from the Actions tab: a single pass (handy for a dry run)
+            exit 0
+          fi
+
+          # full-session supervisor. Stop 12 minutes short of the job limit so the hand-off is clean.
+          end=$(( $(date +%s) + 346 * 60 ))
+          state=closed; passes=0
+          while [ "$(date +%s)" -lt "$end" ]; do
+            read -r state secs < <(node bot/session.js)
+            left=$(( end - $(date +%s) ))
+            if [ "$state" = "open" ]; then
               t0=$(date +%s)
               node bot/run.js || true
+              passes=$(( passes + 1 ))
+              # keep the PERIOD at ~60s: a two-account pass takes ~30s, so sleep only the rest of the minute
               rest=$(( 60 - ( $(date +%s) - t0 ) ))
               if [ "$rest" -lt 5 ]; then rest=5; fi
-              if [ $(( $(date +%s) + rest )) -lt "$end" ]; then sleep "$rest"; else break; fi
-            done
-          else
-            # manual run from the Actions tab: a single pass (handy for a dry run)
-            node bot/run.js
+              sleep "$rest"
+            elif [ "$state" = "closed" ] && [ "$secs" -lt "$left" ]; then
+              # arrived before the open: wait for it (checking every 5 minutes, and waking right at the bell)
+              if [ "$passes" -gt 0 ]; then break; fi
+              echo "market opens in $(( secs / 60 )) min, waiting"
+              if [ "$secs" -lt 300 ]; then sleep $(( secs + 2 )); else sleep 300; fi
+            else
+              break     # closed for the day (or the clock call failed): nothing more to do
+            fi
+          done
+          echo "supervisor done: $passes passes, market $state"
+
+          # still open at the job limit: hand off to a fresh supervisor so the rest of the session is covered
+          if [ "$state" = "open" ] && [ "$(date +%s)" -ge "$end" ]; then
+            echo "market still open, starting the next supervisor"
+            gh workflow run trade.yml --repo "$GITHUB_REPOSITORY" --ref "$GITHUB_REF_NAME" -f chain=true -f dry_run=false
           fi

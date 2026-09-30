@@ -43,9 +43,12 @@ so there is nothing to save between runs. Watch it any time on the dashboard or 
 - Fundamental inputs (company financials, news) refresh when you refresh AlphaLab's data. Everything
   price-driven, the regime, momentum, conviction, sizing, and all the risk management, recomputes live
   every run. So the book breathes with the market all day off real prices.
-- GitHub's scheduler starts each supervisor best-effort and can be late, and the loop trades about once
-  a minute rather than on every tick. That is by design: the strategy paces into its targets over many
-  runs, so exact timing does not matter and a missed minute is picked up by the next one.
+- GitHub's scheduler is best-effort and fires hours late (often only 2 or 3 times a day), so the cron
+  is only a doorbell: the first fire starts one supervisor that waits for the open, trades about once a
+  minute until Alpaca's clock says the market closed, and starts a fresh copy of itself if it hits
+  GitHub's 6-hour job limit first. If the first fire of the day lands late, that morning is missed. For
+  a guaranteed start at the open, have an always-on scheduler (for example a free cron service) call
+  GitHub's workflow_dispatch API for trade.yml with chain=true at 9:25 ET.
 - Use a dedicated paper account for the bot. It treats the whole account as its own and will sell
   anything you hand-buy that is not in its target.
 
@@ -81,8 +84,8 @@ it. The bot trades against whatever the account's real equity is either way.
    order it would place without sending any. Read the run summary to confirm the target book looks
    right.
 3. When you are happy, let the schedule take over, or run it again with dry run false to trade for
-   real (paper) immediately. From then on it runs itself about once a minute during market hours, with
-   a fresh supervisor taking over roughly every 15 minutes so it keeps going all session.
+   real (paper) immediately. From then on it runs itself about once a minute during market hours, one
+   long supervisor per session (handing off to a fresh one at GitHub's 6-hour job limit).
 
 ## Watching it
 
