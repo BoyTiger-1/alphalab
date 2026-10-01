@@ -99,6 +99,27 @@ def gdelt(query, mode):
         return None
 
 
+# A feed that fails today (StockTwits started refusing GitHub's cloud servers on 2026-10-01) must not
+# blank the data or fail the whole refresh. Keep the last real reading for that ticker, tagged with the
+# date it was fetched, for up to MAX_CARRY_DAYS; after that it is dropped so stale chatter never votes.
+MAX_CARRY_DAYS = 7
+
+
+def previous_bundle(path, var):
+    try:
+        txt = open(path, encoding="utf-8").read()
+        return json.loads(txt[txt.index("=") + 1:].rstrip().rstrip(";"))
+    except Exception:
+        return {}
+
+
+def fresh_enough(asof):
+    try:
+        return (dt.date.today() - dt.date.fromisoformat(asof[:10])).days <= MAX_CARRY_DAYS
+    except Exception:
+        return False
+
+
 def stocktwits(sym):
     txt = get(f"https://api.stocktwits.com/api/2/streams/symbol/{sym}.json")
     if not txt:
@@ -145,6 +166,22 @@ def main():
             out[t]["newsVol"] = vol
         print(f"{t}: tone={'ok' if tone else 'no'} vol={'ok' if vol else 'no'}")
 
+    # carry forward the last real reading for any feed that failed today (dated, at most a week old)
+    prev = previous_bundle(os.path.join(OUT, "altdata.js"), "ALPHALAB_ALT")
+    carried = 0
+    for t, old in (prev.get("tickers") or {}).items():
+        if t not in out:
+            continue
+        for k in ("wiki", "st", "newsTone", "newsVol"):
+            if out[t].get(k) or not old.get(k):
+                continue
+            asof = (old.get("asofBy") or {}).get(k) or prev.get("asof") or ""
+            if fresh_enough(asof):
+                out[t][k] = old[k]
+                out[t].setdefault("asofBy", {})[k] = asof
+                carried += 1
+    if carried:
+        print(f"carried forward {carried} feed readings from earlier snapshots")
     bundle = {
         "asof": dt.date.today().isoformat(),
         "tickers": out,

@@ -4,6 +4,7 @@ the social panel in the buy/sell decision engine.
 
 Output: data/newsfeed.js -> window.ALPHALAB_NEWS = {asof, tickers: {SYM: {news:[...], posts:[...]}}}
 """
+import datetime as dt
 import json
 import os
 import time
@@ -63,6 +64,27 @@ def gdelt_news(query):
         return None
 
 
+# A feed that fails today (StockTwits started refusing GitHub's cloud servers on 2026-10-01) must not
+# blank the data or fail the whole refresh. Keep the last real reading for that ticker, tagged with the
+# date it was fetched, for up to MAX_CARRY_DAYS; after that it is dropped so stale chatter never votes.
+MAX_CARRY_DAYS = 7
+
+
+def previous_bundle(path, var):
+    try:
+        txt = open(path, encoding="utf-8").read()
+        return json.loads(txt[txt.index("=") + 1:].rstrip().rstrip(";"))
+    except Exception:
+        return {}
+
+
+def fresh_enough(asof):
+    try:
+        return (dt.date.today() - dt.date.fromisoformat(asof[:10])).days <= MAX_CARRY_DAYS
+    except Exception:
+        return False
+
+
 def stocktwits_posts(sym):
     txt = get(f"https://api.stocktwits.com/api/2/streams/symbol/{sym}.json", timeout=25)
     if not txt:
@@ -100,6 +122,20 @@ def main():
             out.setdefault(sym, {})["news"] = news
         print(f"{sym}: news={'ok' if news else 'no'}", flush=True)
         time.sleep(5.5)
+    # carry forward the last real posts / headlines for any ticker whose feed failed today
+    prev = previous_bundle(os.path.join(OUT, "newsfeed.js"), "ALPHALAB_NEWS")
+    carried = {"posts": 0, "news": 0}
+    for sym, old in (prev.get("tickers") or {}).items():
+        for k in ("posts", "news"):
+            if out.get(sym, {}).get(k) or not old.get(k):
+                continue
+            asof = old.get(k + "Asof") or prev.get("asof") or ""
+            if fresh_enough(asof):
+                out.setdefault(sym, {})[k] = old[k]
+                out[sym][k + "Asof"] = asof
+                carried[k] += 1
+    if carried["posts"] or carried["news"]:
+        print(f"carried forward from earlier snapshots: {carried['posts']} post lists, {carried['news']} news lists")
     bundle = {"asof": time.strftime("%Y-%m-%d"), "tickers": out,
               "source": "GDELT article list (real headlines) + StockTwits (real investor posts)"}
     js = "window.ALPHALAB_NEWS=" + json.dumps(bundle, separators=(",", ":")) + ";"
